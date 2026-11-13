@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net8.0-windows10.0.17763.0</TargetFramework><UseWPF>true</UseWPF><AssemblyName>NewsPlay</AssemblyName><UseAppHost>true</UseAppHost><ApplicationManifest>app.manifest</ApplicationManifest></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../NewsPlay.Core/NewsPlay.Core.csproj"/></ItemGroup>
+  <ItemGroup><PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3856.49"/></ItemGroup>
+  <ItemGroup><PackageReference Include="NAudio" Version="2.2.1"/></ItemGroup>
+  <ItemGroup><Content Include="Cg\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/></ItemGroup>
+  <ItemGroup><FrameworkReference Update="Microsoft.Windows.SDK.NET.Ref" RuntimeFrameworkVersion="10.0.17763.56"/></ItemGroup>
+</Project>
+

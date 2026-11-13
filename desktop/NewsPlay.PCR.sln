@@ -1,0 +1,36 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NewsPlay.Core", "NewsPlay.Core\NewsPlay.Core.csproj", "{4BE76651-5933-40D5-912F-5FF82BD5A3EF}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NewsPlay.Engine", "NewsPlay.Engine\NewsPlay.Engine.csproj", "{FD816A55-D052-48A3-A0E2-35C8F8FCE88D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NewsPlay.Desktop", "NewsPlay.Desktop\NewsPlay.Desktop.csproj", "{277693A8-743F-4FBB-83DE-4ABFB83F4075}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NewsPlay.Tests", "NewsPlay.Tests\NewsPlay.Tests.csproj", "{D764B422-654E-4A36-8160-DB3D3B8E2B7C}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{4BE76651-5933-40D5-912F-5FF82BD5A3EF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4BE76651-5933-40D5-912F-5FF82BD5A3EF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4BE76651-5933-40D5-912F-5FF82BD5A3EF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4BE76651-5933-40D5-912F-5FF82BD5A3EF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FD816A55-D052-48A3-A0E2-35C8F8FCE88D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FD816A55-D052-48A3-A0E2-35C8F8FCE88D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FD816A55-D052-48A3-A0E2-35C8F8FCE88D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FD816A55-D052-48A3-A0E2-35C8F8FCE88D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{277693A8-743F-4FBB-83DE-4ABFB83F4075}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{277693A8-743F-4FBB-83DE-4ABFB83F4075}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{277693A8-743F-4FBB-83DE-4ABFB83F4075}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{277693A8-743F-4FBB-83DE-4ABFB83F4075}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D764B422-654E-4A36-8160-DB3D3B8E2B7C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D764B422-654E-4A36-8160-DB3D3B8E2B7C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D764B422-654E-4A36-8160-DB3D3B8E2B7C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D764B422-654E-4A36-8160-DB3D3B8E2B7C}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

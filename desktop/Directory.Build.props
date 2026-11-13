@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12.0</LangVersion>
+    <PlatformTarget>x64</PlatformTarget>
+    <Deterministic>true</Deterministic>
+    <Product>NewsPlay Desktop Playout</Product>
+    <Company>NewsPlay</Company>
+    <Version>0.3.0</Version>
+    <Description>Native dual-channel operator console and independent playback engine</Description>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><AllowUnsafeBlocks>true</AllowUnsafeBlocks><UseAppHost>true</UseAppHost></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../NewsPlay.Core/NewsPlay.Core.csproj"/><PackageReference Include="LibVLCSharp" Version="3.9.3"/><PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.21"/><PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11"/></ItemGroup>
+  <ItemGroup><PackageReference Include="NAudio" Version="2.2.1"/></ItemGroup>
+  <ItemGroup><Reference Include="DeckLinkAPI"><HintPath>Interop/DeckLinkAPI.dll</HintPath><Private>true</Private><EmbedInteropTypes>false</EmbedInteropTypes></Reference></ItemGroup>
+</Project>
