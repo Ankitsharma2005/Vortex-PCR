@@ -15,7 +15,6 @@ namespace NewsPlay.Desktop;
 public partial class MainWindow : Window
 {
     private readonly EngineClient client = new();
-    private readonly LicenseClient licensing = new();
     private readonly DispatcherTimer stateTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private readonly DispatcherTimer frameTimer = new(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(15) };
     private readonly FrameReader[] frames = [new(), new()];
@@ -45,7 +44,7 @@ public partial class MainWindow : Window
     }
     private async void WindowLoaded(object sender, RoutedEventArgs e)
     {
-        await Try(async () => { await client.Connect(); try { await licensing.RefreshIfDue(); } catch { /* Keep a valid cached license available during temporary service outages. */ } await Poll(); if (!state!.SharedRundown) await Send(new EngineCommand { Action = "Rundown.Share" }); SelectChannel(selectedChannel); LoadGraphics(); FormatOne.SelectedItem = state!.Channels[0].Format;
+        await Try(async () => { await client.Connect(); await Poll(); if (!state!.SharedRundown) await Send(new EngineCommand { Action = "Rundown.Share" }); SelectChannel(selectedChannel); LoadGraphics(); FormatOne.SelectedItem = state!.Channels[0].Format;
 #if !MCR_VARIANT
             FormatTwo.SelectedItem = state.Channels[1].Format;
 #endif
@@ -212,7 +211,6 @@ public partial class MainWindow : Window
     public async Task Transport(int channel, string action, double value = 0)
     {
         if (state is null) return;
-        if (action is "Play" or "Next" or "Previous" && !EnsureLicenseForNewTake()) return;
         if (action == "Stop" && (Channel(channel).Status == "Playing" || Channel(channel).Emergency || state.Linked) && MessageBox.Show(this, state.Linked ? "Stop both linked channels?" : $"Stop channel {channel}?", "Confirm stop", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         await Send(new EngineCommand { Channel = channel, Action = action, Value = value, Confirm = action == "Stop" });
     }
@@ -228,8 +226,7 @@ public partial class MainWindow : Window
             MessageBox.Show(this, message + "\n\nFile availability and metadata check only; run a rehearsal to verify audio and picture.", "Rundown preflight", MessageBoxButton.OK, report.Issues.Count == 0 ? MessageBoxImage.Information : MessageBoxImage.Warning); return;
         }
         if (action == "Rundown.Lock") { await Send(new EngineCommand { Channel = channel, Action = action, Enabled = !p.Locked }); return; }
-        if (action == "AutoAdvance") { if (!Channel(channel).AutoAdvance && !EnsureLicenseForNewTake()) return; await Send(new EngineCommand { Channel = channel, Action = action, Enabled = !Channel(channel).AutoAdvance }); return; }
-        if (action == "Take" && !EnsureLicenseForNewTake()) return;
+        if (action == "AutoAdvance") { await Send(new EngineCommand { Channel = channel, Action = action, Enabled = !Channel(channel).AutoAdvance }); return; }
         if (action == "Park" && (Channel(channel).Status == "Playing" || Channel(channel).Emergency) && MessageBox.Show(this, "Park replaces the current output with the selected clip's first frame. Continue?", "Park on program", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         if (action == "Edit") { await EditItem(channel, item!, true); return; }
         if (action is "Rundown.Create" or "Rundown.Rename") { var name = PromptWindow.Ask(this, action == "Rundown.Create" ? "New rundown" : "Rename rundown", "Rundown name", action == "Rundown.Create" ? "Untitled bulletin" : p.Name); if (name is not null) await Send(new EngineCommand { Channel = channel, Action = action, Text = name }); return; }

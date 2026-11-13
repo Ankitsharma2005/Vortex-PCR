@@ -52,12 +52,49 @@ Test("DeckLink audio timestamps share video timebase, delay trim and underrun re
 {
     var t=new DeckLinkTimeline();t.Anchor(1000000,1001,30000);Equal(1602L,t.AudioTime(1000000));Equal(2082L,t.AudioTime(1010000));Equal(2562L,t.AudioTime(1000000,20));
     Equal(11L,DeckLinkTimeline.NextVideo(3,10000,1000));Equal(15L,DeckLinkTimeline.NextVideo(15,10000,1000));
+    Equal(240, DeckLinkTimeline.SkipSamples(48000, 0, 480, 48000, 48240));
+    Equal(120, DeckLinkTimeline.SkipSamples(48000, 120, 360, 48240, 48100));
+    Equal(480, DeckLinkTimeline.SkipSamples(48000, 0, 480, 49000, 0));
+    Equal(0, DeckLinkTimeline.SkipSamples(49000, 0, 480, 48000, 48500));
+    t.Reset(); Equal(false, t.Ready); Throws(() => t.AudioTime(1000000));
+    t.Anchor(2000000, 6000, 30000); Equal(9600L, t.AudioTime(2000000));
+});
+Test("Long DeckLink playback filters callback jitter while tracking hardware drift",()=>
+{
+    var timeline = new DeckLinkTimeline();
+    const long start = 7L * 24 * 60 * 60 * 1000000;
+    timeline.Anchor(start, 0, 25000);
+    long previous = -1;
+    // Two hours at 25 fps, starting after a week of clock uptime; 100 ppm drift.
+    for (long frame = 1; frame <= 180000; frame++)
+    {
+        var pts = start + frame * 40004;
+        var jitter = frame % 2 == 0 ? 3000 : -3000;
+        timeline.Anchor(pts + jitter, frame * 1000, 25000);
+        var mapped = timeline.AudioTime(pts);
+        Equal(true, mapped > previous);
+        if (frame > 1000 && Math.Abs(mapped - frame * 1920) > 96) throw new Exception("Clock drift exceeded 2 ms");
+        previous = mapped;
+    }
+    var before = timeline.AudioTime(start + 180000 * 40004L);
+    timeline.Anchor(start + 180000 * 40004L + 20000, 180000 * 1000L, 25000);
+    Equal(true, Math.Abs(timeline.AudioTime(start + 180000 * 40004L) - before) <= 2);
 });
 Test("DeckLink bilinear upscale preserves endpoints and smooths intermediate pixels",()=>
 {
     byte[] source=[0,0,0,255,255,255,255,255];var target=new byte[4*2*4];
     typeof(DeckLinkOutputService).GetMethod("Scale",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Static)!.Invoke(null,[source,2,1,target,4,2,16]);
     Equal((byte)0,target[0]);Equal((byte)64,target[4]);Equal((byte)191,target[8]);Equal((byte)255,target[12]);Equal((byte)255,target[15]);
+});
+Test("HD DeckLink parallel scaling fills every row without changing a solid colour",()=>
+{
+    var source = new byte[960 * 540 * 4];
+    for (var i = 0; i < source.Length; i += 4) { source[i] = 30; source[i+1] = 80; source[i+2] = 160; source[i+3] = 255; }
+    var target = new byte[1920 * 1080 * 4];
+    var scale = typeof(DeckLinkOutputService).GetMethod("Scale", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+    scale.Invoke(null, [source, 960, 540, target, 1920, 1080, 7680]);
+    for (var i = 0; i < target.Length; i += 4)
+        if (target[i] != 30 || target[i+1] != 80 || target[i+2] != 160 || target[i+3] != 255) throw new Exception("HD raster mismatch at " + i);
 });
 Test("Hardware PCM carries the original presentation timestamp",()=>
 {

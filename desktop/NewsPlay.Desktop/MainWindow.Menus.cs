@@ -64,10 +64,8 @@ public partial class MainWindow
                     break;
                 case "Input": Info("Input sources", "Local media / watch folder: available from Input → Import media and Tools → Engine settings.\n\nSource preview is independent of program playback.\n\nDeckLink SDI/HDMI capture: not implemented.\nNDI input: not implemented.\nHDMI/DP ports on a normal graphics card are outputs, not capture inputs.\n\nLive input settings require a supported capture device and adapter integration."); break;
                 case "Output": new OutputSettingsWindow(client, Send, StartDisplayOutputs, StopDisplayOutputs, selectedChannel) { Owner = this }.ShowDialog(); break;
-                case "BasicCg": CgSurface.Enabled = false; cgWindow?.Close(); Render(); break;
                 case "Streaming": new StreamingWindow(client) { Owner = this }.Show(); break;
                 case "StopOutputs": StopDisplayOutputs(); break;
-                case "Licence": new LicenseWindow { Owner = this }.ShowDialog(); licensing.Reload(); break;
                 case "Shortcuts": ShowShortcuts(); break;
                 case "Help":
 #if MCR_VARIANT
@@ -82,14 +80,6 @@ public partial class MainWindow
     {
         var w = new Window { Style = (Style)Application.Current.Resources[typeof(Window)], Title = "NewsPlay · " + title, Width = 640, Height = 410, Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         w.Content = new ScrollViewer { Margin = new Thickness(24), Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, FontSize = 14 } }; w.ShowDialog();
-    }
-    private bool EnsureLicenseForNewTake()
-    {
-        if (licensing.ValidateCached(out _)) return true;
-        MessageBox.Show(this, "A valid NewsPlay license is required for new on-air takes. Current playback and Stop remain available. Open Licence in the menu to activate or renew.", "License required", MessageBoxButton.OK, MessageBoxImage.Warning);
-        new LicenseWindow { Owner = this }.ShowDialog();
-        licensing.Reload();
-        return licensing.ValidateCached(out _);
     }
     private void StopDisplayOutputs() { foreach (var o in outputs.ToArray()) o.Close(); }
     private void StartDisplayOutputs(DisplayOutputProfile profile)

@@ -165,30 +165,44 @@ public sealed class DeckLinkOutputService : IDisposable
                 }
                 var source = new byte[VlcDecoder.MaxWidth * VlcDecoder.MaxHeight * 4]; var scaled = new byte[rgbStride * height];
                 long sequence = 0, sourceClock = 0, anchoredClock = 0; int poolIndex = 0, sw = 0, sh = 0; var timeline = new DeckLinkTimeline();
+                long scaledClock = -1; int scaledWidth = -1, scaledHeight = -1;
                 void Schedule()
                 {
                     if (decoder.CopyHardwareFrame(source, out var nextWidth, out var nextHeight, out var clock)) { sw = nextWidth; sh = nextHeight; sourceClock = clock; }
-                    Scale(source, sw, sh, scaled, width, height, rgbStride);
+                    if (sourceClock != scaledClock || sw != scaledWidth || sh != scaledHeight)
+                    {
+                        Scale(source, sw, sh, scaled, width, height, rgbStride);
+                        scaledClock = sourceClock; scaledWidth = sw; scaledHeight = sh;
+                    }
                     DeckLinkCompatibility.WriteFrame(rgb, scaled);
                     var target = pool[poolIndex++ % pool.Count]; converter.Call("ConvertFrame", rgb, target);
                     if(Route.LegalRange)DeckLinkCompatibility.LegalizeFrame(target,width,height,yuvStride);
                     var displayTime = sequence++ * duration;
                     output.ScheduleVideoFrame(target, displayTime, duration, timescale);
-                    if(sourceClock > 0 && sourceClock != anchoredClock) { timeline.Anchor(sourceClock, displayTime, timescale); anchoredClock = sourceClock; }
+                    if(sourceClock > 0 && sourceClock != anchoredClock)
+                    {
+                        timeline.Anchor(sourceClock, displayTime, timescale); anchoredClock = sourceClock;
+                        // Update only for a fresh image. A held/paused frame must not grow the audio delay.
+                        var hardwareTime = started ? output.ScheduledTime(timescale) : 0;
+                        decoder.SetSoundCardVideoDelay((long)((displayTime - hardwareTime) * 1000000d / timescale) + decoder.ClockMicroseconds - sourceClock + Route.AudioDelayMs * 1000L);
+                    }
                     Interlocked.Increment(ref frames);
                 }
                 for (var i = 0; i < 3; i++) Schedule();
                 Cancel.Token.ThrowIfCancellationRequested();
                 output.StartScheduledPlayback(0, timescale, 1); started = true; running = true;
                 message = "Running · " + output.ApiName + " · 8-bit SDR · " + (tagged?(height>576?"Rec.709 tagged":"Rec.601 tagged"):"driver colour metadata default") + (Route.LegalRange?" · Y16–235 C16–240":"") + " · timestamped PCM/video · audio trim " + Route.AudioDelayMs + " ms"; Ready.TrySetResult();
-                TimestampedPcm? pending = null; int offset = 0; long pendingTime = 0;
+                TimestampedPcm? pending = null; int offset = 0; long pendingTime = 0, submittedUntil = 0;
                 while (!Cancel.IsCancellationRequested)
                 {
-                    if (Interlocked.Exchange(ref resetAudio, 0) != 0 && audioEnabled) { output.FlushBufferedAudioSamples(); pending = null; offset = 0; }
+                    if (Interlocked.Exchange(ref resetAudio, 0) != 0 && audioEnabled)
+                    {
+                        output.FlushBufferedAudioSamples(); pending = null; offset = 0; submittedUntil = 0;
+                        timeline.Reset(); anchoredClock = sourceClock; decoder.SetSoundCardVideoDelay(0);
+                    }
                     output.GetBufferedVideoFrameCount(out var count);
                     if(count == 0) { sequence = DeckLinkTimeline.NextVideo(sequence, output.ScheduledTime(timescale), duration); Interlocked.Increment(ref underruns); }
                     if (count < 3) Schedule();
-                    if (sourceClock > 0) decoder.SetSoundCardVideoDelay((long)((sequence - 1) * duration * 1000000d / timescale) - (long)(output.ScheduledTime(timescale) * 1000000d / timescale) + decoder.ClockMicroseconds - sourceClock + Route.AudioDelayMs * 1000L);
                     if (audioEnabled)
                     {
                         if (decoder.AudioSampleRate != 48000) throw new InvalidOperationException("Audio sample rate changed; restart DeckLink after restoring 48000 Hz");
@@ -197,11 +211,10 @@ public sealed class DeckLinkOutputService : IDisposable
                         {
                             if(offset == 0) pendingTime = timeline.AudioTime(pending!.PresentationMicroseconds > 0 ? pending.PresentationMicroseconds : decoder.ClockMicroseconds, Route.AudioDelayMs);
                             var hardwareNow = output.ScheduledTime(48000);
-                            var lateSamples = Math.Max(0, hardwareNow - (pendingTime + offset / 4));
-                            offset += (int)Math.Min((pending!.Bytes.Length - offset) / 4, lateSamples) * 4;
+                            offset += DeckLinkTimeline.SkipSamples(pendingTime, offset / 4, (pending!.Bytes.Length - offset) / 4, hardwareNow, submittedUntil) * 4;
                             if(offset == pending.Bytes.Length) { pending=null;offset=0;Interlocked.Increment(ref droppedAudio);continue; }
                             var handle = GCHandle.Alloc(pending.Bytes, GCHandleType.Pinned);
-                            try { output.ScheduleAudioSamples(handle.AddrOfPinnedObject() + offset, (uint)((pending.Bytes.Length - offset) / 4), pendingTime + offset / 4, 48000, out var written); offset += checked((int)written * 4); Interlocked.Add(ref audioFrames, written); if (offset == pending.Bytes.Length) { pending = null; offset = 0; } }
+                            try { output.ScheduleAudioSamples(handle.AddrOfPinnedObject() + offset, (uint)((pending.Bytes.Length - offset) / 4), pendingTime + offset / 4, 48000, out var written); offset += checked((int)written * 4); if (written > 0) submittedUntil = pendingTime + offset / 4; Interlocked.Add(ref audioFrames, written); if (offset == pending.Bytes.Length) { pending = null; offset = 0; } }
                             finally { handle.Free(); }
                         }
                     }
@@ -231,7 +244,7 @@ public sealed class DeckLinkOutputService : IDisposable
         var left = (width - w) / 2; var top = (height - h) / 2;
         var offsets = new int[w]; var weights = new int[w];
         for(var x=0;x<w;x++) { var sx=Math.Clamp((x+.5)*sw/w-.5,0,sw-1);offsets[x]=(int)sx;weights[x]=(int)((sx-offsets[x])*256); }
-        for(var y=0;y<h;y++)
+        void ScaleRow(int y)
         {
             var sy=Math.Clamp((y+.5)*sh/h-.5,0,sh-1);var y0=(int)sy;var y1=Math.Min(sh-1,y0+1);var fy=(int)((sy-y0)*256);
             for(var x=0;x<w;x++)
@@ -240,6 +253,8 @@ public sealed class DeckLinkOutputService : IDisposable
                 for(var channel=0;channel<3;channel++){var upper=source[a+channel]*(256-fx)+source[b+channel]*fx;var lower=source[c+channel]*(256-fx)+source[d+channel]*fx;target[to+channel]=(byte)((upper*(256-fy)+lower*fy+32768)>>16);}target[to+3]=255;
             }
         }
+        if (w * h >= 1280 * 720) Parallel.For(0, h, new ParallelOptions { MaxDegreeOfParallelism = Math.Min(4, Environment.ProcessorCount) }, ScaleRow);
+        else for (var y = 0; y < h; y++) ScaleRow(y);
     }
 }
 
