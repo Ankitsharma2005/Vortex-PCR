@@ -10,12 +10,18 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NewsPlay.Desktop", "NewsPla
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NewsPlay.Tests", "NewsPlay.Tests\NewsPlay.Tests.csproj", "{D764B422-654E-4A36-8160-DB3D3B8E2B7C}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NewsPlay.ProjectVideoChecks", "NewsPlay.ProjectVideoChecks\NewsPlay.ProjectVideoChecks.csproj", "{1178AB21-C370-43CE-8420-44B7DA48E517}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
 		Release|Any CPU = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{1178AB21-C370-43CE-8420-44B7DA48E517}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1178AB21-C370-43CE-8420-44B7DA48E517}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1178AB21-C370-43CE-8420-44B7DA48E517}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1178AB21-C370-43CE-8420-44B7DA48E517}.Release|Any CPU.Build.0 = Release|Any CPU
 		{4BE76651-5933-40D5-912F-5FF82BD5A3EF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{4BE76651-5933-40D5-912F-5FF82BD5A3EF}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4BE76651-5933-40D5-912F-5FF82BD5A3EF}.Release|Any CPU.ActiveCfg = Release|Any CPU

@@ -67,6 +67,8 @@ public partial class MainWindow
                 case "Streaming": new StreamingWindow(client) { Owner = this }.Show(); break;
                 case "StopOutputs": StopDisplayOutputs(); break;
                 case "Shortcuts": ShowShortcuts(); break;
+                case "Support":
+                    Info("Help & Support", "Vortex Software Solution\nTechnical & Support\n\nPerson name: Ankit Sharma\n\nContact numbers:\n+917600424631\n+917405406182\n\nEmail: as326023@gmail.com"); break;
                 case "Help":
 #if MCR_VARIANT
                     Info("VORTEX MCR operator help", "Import clips → add them to the Master Playlist → load a clip in Preview → CUT Preview to Program.\n\nF1 Play/Pause · F2 Park · F3 Play Now · F4 Loop playlist\nCtrl+Q Cue · Ctrl+G Locate current · F12 Shortcuts\n\nLive Switcher, CG Studio, Streaming, Scheduler, Reports and System tools are in the VORTEX navigation rail. Preview is an operator monitor; MCR has one Program output."); break;

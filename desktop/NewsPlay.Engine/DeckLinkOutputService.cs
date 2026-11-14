@@ -46,11 +46,13 @@ public sealed class DeckLinkOutputService : IDisposable
                                 modeIterator.Next(out var mode); if (mode is null) break;
                                 try
                                 {
-                                    if (mode.GetWidth() > 1920 || mode.GetHeight() > 1080) continue;
+                                    if (mode.GetWidth() > 3840 || mode.GetHeight() > 2160) continue;
                                     output.DoesSupportVideoMode(0, mode.GetDisplayMode(), _BMDPixelFormat.bmdFormat8BitYUV, _BMDVideoOutputConversionMode.bmdNoVideoOutputConversion, _BMDSupportedVideoModeFlags.bmdSupportedVideoModeDefault, out _, out var supported);
                                     if (supported == 0) continue;
                                     mode.GetName(out var label); mode.GetFrameRate(out var duration, out var scale);
-                                    modes.Add(new((long)mode.GetDisplayMode(), label, mode.GetWidth(), mode.GetHeight(), duration, scale));
+                                    if (duration <= 0 || scale <= 0 || scale / (double)duration > 60.01) continue;
+                                    var dominance = mode.GetFieldDominance();
+                                    modes.Add(new((long)mode.GetDisplayMode(), label, mode.GetWidth(), mode.GetHeight(), duration, scale, dominance is _BMDFieldDominance.bmdUpperFieldFirst or _BMDFieldDominance.bmdLowerFieldFirst, dominance == _BMDFieldDominance.bmdLowerFieldFirst));
                                 }
                                 catch (COMException ex) { issues.Add(name + ": mode query 0x" + ex.HResult.ToString("X8")); }
                                 finally { Release(mode); }
@@ -73,17 +75,25 @@ public sealed class DeckLinkOutputService : IDisposable
     public async Task Start(DeckLinkRoute route)
     {
         PlayoutController.Number(route.AudioDelayMs, -500, 500);
+        route.ValidateAudio();
         Session session;
         lock (gate)
         {
             if (!decoders.ContainsKey(route.Port)) throw new InvalidOperationException("Select port 1 or 2");
+            if (sessions.TryGetValue(route.Port, out var failed) && failed.Done.Task.IsCompleted && !failed.Status.Running) sessions.Remove(route.Port);
             if (sessions.ContainsKey(route.Port)) throw new InvalidOperationException("Stop this port's DeckLink route before changing it");
             if (sessions.Values.Any(s => s.Route.DeviceId == route.DeviceId)) throw new InvalidOperationException("This DeckLink subdevice is already assigned to another port");
             session = new Session(route, decoders[route.Port]); sessions.Add(route.Port, session);
         }
         session.Start();
         try { await session.Ready.Task.WaitAsync(TimeSpan.FromSeconds(15)); }
-        catch { session.Cancel.Cancel(); throw; }
+        catch
+        {
+            session.Cancel.Cancel();
+            try { await session.Done.Task.WaitAsync(TimeSpan.FromSeconds(15)); } catch { }
+            lock (gate) if (sessions.TryGetValue(route.Port, out var current) && ReferenceEquals(current, session)) sessions.Remove(route.Port);
+            throw;
+        }
     }
     public async Task Stop(int port)
     {
@@ -105,6 +115,7 @@ public sealed class DeckLinkOutputService : IDisposable
         private readonly Queue<TimestampedPcm> audio = new();
         private readonly object audioGate = new();
         private int queuedSamples;
+        private int AudioStride => Route.AudioChannels * 2;
         private long underruns, droppedAudio;
         private long frames, audioFrames;
         private volatile string message = "Starting…";
@@ -116,9 +127,10 @@ public sealed class DeckLinkOutputService : IDisposable
         private void Samples(TimestampedPcm packet)
         {
             if(packet.Bytes.Length / 4 > 24000) { Interlocked.Increment(ref droppedAudio); return; }
-            lock(audioGate) { audio.Enqueue(packet); queuedSamples += packet.Bytes.Length / 4; while(queuedSamples > 24000 && audio.Count > 1) { queuedSamples -= audio.Dequeue().Bytes.Length / 4; Interlocked.Increment(ref droppedAudio); } }
+            packet = Route.RouteAudio(packet);
+            lock(audioGate) { audio.Enqueue(packet); queuedSamples += packet.Bytes.Length / AudioStride; while(queuedSamples > 24000 && audio.Count > 1) { queuedSamples -= audio.Dequeue().Bytes.Length / AudioStride; Interlocked.Increment(ref droppedAudio); } }
         }
-        private bool Dequeue(out TimestampedPcm? packet) { lock(audioGate) { if(audio.Count == 0) { packet=null; return false; } packet=audio.Dequeue();queuedSamples-=packet.Bytes.Length/4;return true; } }
+        private bool Dequeue(out TimestampedPcm? packet) { lock(audioGate) { if(audio.Count == 0) { packet=null; return false; } packet=audio.Dequeue();queuedSamples-=packet.Bytes.Length/AudioStride;return true; } }
         private void Reset() { lock(audioGate) { audio.Clear(); queuedSamples=0; } Interlocked.Exchange(ref resetAudio, 1); }
         private void Run()
         {
@@ -136,8 +148,17 @@ public sealed class DeckLinkOutputService : IDisposable
                 output.DoesSupportVideoMode(connector, (_BMDDisplayMode)Route.Mode, _BMDPixelFormat.bmdFormat8BitYUV, _BMDVideoOutputConversionMode.bmdNoVideoOutputConversion, _BMDSupportedVideoModeFlags.bmdSupportedVideoModeDefault, out var actual, out var supported);
                 if (supported == 0 || (long)actual != Route.Mode) throw new InvalidOperationException("Card/profile does not support this connector and video mode");
                 output.GetDisplayMode(actual, out mode); var width = mode.GetWidth(); var height = mode.GetHeight();
-                if (width > 1920 || height > 1080 || width < 2 || height < 2) throw new InvalidOperationException("This adapter supports SD/HD modes through 1080; UHD is not enabled");
+                if (width > 3840 || height > 2160 || width < 2 || height < 2) throw new InvalidOperationException("Output raster exceeds supported SD through UHD 2160 limits");
+                if ((width > 1920 || height > 1080) && decoder.ProductionFormat is null) throw new InvalidOperationException("Select and validate a Project Video Format before enabling UHD output");
+                var dominance = mode.GetFieldDominance();
+                var interlacedOutput = dominance is _BMDFieldDominance.bmdUpperFieldFirst or _BMDFieldDominance.bmdLowerFieldFirst;
+                var lowerFieldFirst = dominance == _BMDFieldDominance.bmdLowerFieldFirst;
                 mode.GetFrameRate(out var duration, out var timescale);
+                if (width > 1920 || height > 1080)
+                {
+                    var compatibility = VideoFormatProbe.Check(new ProjectVideoFormat("DeckLink output", width, height, (int)Math.Ceiling(timescale / (double)duration), interlacedOutput));
+                    if (!compatibility.Supported) throw new InvalidOperationException("UHD DeckLink conversion is not enabled on this PC: " + compatibility.Message);
+                }
                 if (connector != 0)
                 {
                     configuration = DeckLinkCompatibility.Configuration(device) ?? throw new InvalidOperationException("Driver has no connector configuration interface. Choose Device default and set SDI/HDMI in Desktop Video Setup.");
@@ -160,20 +181,26 @@ public sealed class DeckLinkOutputService : IDisposable
                 if (Route.Audio)
                 {
                     if (decoder.AudioSampleRate != 48000) throw new InvalidOperationException("Set this program audio profile to 48000 Hz before enabling embedded SDI audio");
-                    output.EnableAudioOutput(_BMDAudioSampleRate.bmdAudioSampleRate48kHz, _BMDAudioSampleType.bmdAudioSampleType16bitInteger, 2, _BMDAudioOutputStreamType.bmdAudioOutputStreamTimestamped);
+                    output.EnableAudioOutput(_BMDAudioSampleRate.bmdAudioSampleRate48kHz, _BMDAudioSampleType.bmdAudioSampleType16bitInteger, (uint)Route.AudioChannels, _BMDAudioOutputStreamType.bmdAudioOutputStreamTimestamped);
                     audioEnabled = true; decoder.TimestampedAudio += Samples;
                 }
                 // Sound-card-only output must also reset its video clock on seek/load/pause.
                 decoder.HardwareAudioReset += Reset;
-                var source = new byte[VlcDecoder.MaxWidth * VlcDecoder.MaxHeight * 4]; var scaled = new byte[rgbStride * height];
+                var source = new byte[decoder.ProductionFormat?.FrameBytes ?? VlcDecoder.MaxWidth * VlcDecoder.MaxHeight * 4]; var scaled = new byte[rgbStride * height];
+                var tight = rgbStride == width * 4 ? scaled : new byte[width * height * 4];
                 long sequence = 0, sourceClock = 0, anchoredClock = 0; int poolIndex = 0, sw = 0, sh = 0; var timeline = new DeckLinkTimeline();
                 long scaledClock = -1; int scaledWidth = -1, scaledHeight = -1;
                 void Schedule()
                 {
-                    if (decoder.CopyHardwareFrame(source, out var nextWidth, out var nextHeight, out var clock)) { sw = nextWidth; sh = nextHeight; sourceClock = clock; }
+                    if (decoder.CopyProductionFrame(source, out var nextWidth, out var nextHeight, out var clock, interlacedOutput, lowerFieldFirst)) { sw = nextWidth; sh = nextHeight; sourceClock = clock; }
                     if (sourceClock != scaledClock || sw != scaledWidth || sh != scaledHeight)
                     {
-                        Scale(source, sw, sh, scaled, width, height, rgbStride);
+                        if (decoder.ProductionFormat is null) Scale(source, sw, sh, scaled, width, height, rgbStride);
+                        else
+                        {
+                            VideoRaster.Scale(source, sw, sh, tight, width, height, interlacedOutput);
+                            if (!ReferenceEquals(tight, scaled)) for (int row = 0; row < height; row++) Buffer.BlockCopy(tight, row * width * 4, scaled, row * rgbStride, width * 4);
+                        }
                         scaledClock = sourceClock; scaledWidth = sw; scaledHeight = sh;
                     }
                     DeckLinkCompatibility.WriteFrame(rgb, scaled);
@@ -214,10 +241,10 @@ public sealed class DeckLinkOutputService : IDisposable
                         {
                             if(offset == 0) pendingTime = timeline.AudioTime(pending!.PresentationMicroseconds > 0 ? pending.PresentationMicroseconds : decoder.ClockMicroseconds, Route.AudioDelayMs);
                             var hardwareNow = output.ScheduledTime(48000);
-                            offset += DeckLinkTimeline.SkipSamples(pendingTime, offset / 4, (pending!.Bytes.Length - offset) / 4, hardwareNow, submittedUntil) * 4;
+                            offset += DeckLinkTimeline.SkipSamples(pendingTime, offset / AudioStride, (pending!.Bytes.Length - offset) / AudioStride, hardwareNow, submittedUntil) * AudioStride;
                             if(offset == pending.Bytes.Length) { pending=null;offset=0;Interlocked.Increment(ref droppedAudio);continue; }
                             var handle = GCHandle.Alloc(pending.Bytes, GCHandleType.Pinned);
-                            try { output.ScheduleAudioSamples(handle.AddrOfPinnedObject() + offset, (uint)((pending.Bytes.Length - offset) / 4), pendingTime + offset / 4, 48000, out var written); offset += checked((int)written * 4); if (written > 0) submittedUntil = pendingTime + offset / 4; Interlocked.Add(ref audioFrames, written); if (offset == pending.Bytes.Length) { pending = null; offset = 0; } }
+                            try { output.ScheduleAudioSamples(handle.AddrOfPinnedObject() + offset, (uint)((pending.Bytes.Length - offset) / AudioStride), pendingTime + offset / AudioStride, 48000, out var written); offset += checked((int)written * AudioStride); if (written > 0) submittedUntil = pendingTime + offset / AudioStride; Interlocked.Add(ref audioFrames, written); if (offset == pending.Bytes.Length) { pending = null; offset = 0; } }
                             finally { handle.Free(); }
                         }
                     }

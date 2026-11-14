@@ -271,7 +271,7 @@ public sealed partial class PlayoutController
             case "AudioAutoLevel": var level = cmd.AutoLevel ?? throw new InvalidOperationException("Missing audio leveling settings"); level.Validate(); d.SetAutoLevel(level); c.AutoLevel = level with { }; break;
             case "Gain": c.GainDb = Number(cmd.Value, -60, 12); d.SetAudio(c.GainDb + (item?.GainDb ?? 0), c.Mute); break;
             case "EndMode": if (cmd.Text is not ("Auto" or "Hold" or "Black")) throw new InvalidOperationException("Invalid end mode"); c.EndMode = cmd.Text; break;
-            case "Format": if (c.Status == "Playing") throw new InvalidOperationException("Stop before changing format"); if (!Timecode.Formats.Contains(cmd.Text)) throw new InvalidOperationException("Invalid format"); c.Format = cmd.Text!; break;
+            case "Format": if (c.Status == "Playing") throw new InvalidOperationException("Stop before changing format"); if (!Timecode.Formats.Contains(cmd.Text)) throw new InvalidOperationException("Invalid format"); if (State.ProjectVideoFormat is { } master && cmd.Text != master) throw new InvalidOperationException("Use Project Video Format settings to change the master production standard"); c.Format = cmd.Text!; break;
             case "Graphics": c.Graphics = cmd.Graphics ?? new(); c.Graphics.TickerSpeed = Math.Clamp(c.Graphics.TickerSpeed, 10, 300); break;
             default: throw new InvalidOperationException("Unknown command: " + cmd.Action);
         }

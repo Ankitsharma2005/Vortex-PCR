@@ -22,7 +22,7 @@ public sealed class LiveInputsWindow : Window
     private int inputSlot = -1;
     private readonly HashSet<Guid> ownedPreviews = [];
     private readonly Func<EngineCommand, Task> send;
-    private readonly ListBox sources = new() { DisplayMemberPath = "Name", MinWidth = 200, Background = new SolidColorBrush(Color.FromRgb(48, 49, 55)), Foreground = Brushes.White };
+    private readonly ListBox sources = new() { DisplayMemberPath = "Name", MinWidth = 180 };
     private readonly TextBox name = new(), address = new(), cache = new() { Text = "500" }, timeout = new() { Text = "8" }, duration = new() { Text = "30" }, schedule = new();
     private readonly ComboBox type = new() { ItemsSource = new[] { "RTSP", "SRT", "RTMP", "HLS", "Screen", "DeckLink", "NDI", "Browser", "USB / Webcam", "Window capture" }, SelectedIndex = 0 };
     private readonly ComboBox videoDevice = new(), audioDevice = new();
@@ -51,18 +51,25 @@ public sealed class LiveInputsWindow : Window
         this.client = client; this.send = send; port.SelectedIndex = channel - 1;
         Title = "NewsPlay · Live Inputs"; Width = 1120; Height = 760; MinWidth = 900; MinHeight = 650;
         Style = (Style)Application.Current.Resources[typeof(Window)]; WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        var root = new DockPanel { Margin = new Thickness(10) }; Content = root;
-        DockPanel.SetDock(message, Dock.Bottom); root.Children.Add(message);
+        var root = new DockPanel { Margin = new Thickness(20) }; Content = root;
+        var title = SettingsUi.Heading("Live inputs", "Connect a source, check its preview, then take it to program."); DockPanel.SetDock(title, Dock.Top); root.Children.Add(title);
+        message.Text = "Choose a saved input or create a new source.";
+        var statusCard = SettingsUi.Status(message); DockPanel.SetDock(statusCard, Dock.Bottom); root.Children.Add(statusCard);
         var tabs = new TabControl(); root.Children.Add(tabs);
-        var setup = new Grid(); setup.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(200) }); setup.ColumnDefinitions.Add(new ColumnDefinition()); setup.ColumnDefinitions.Add(browserColumn);
-        var left = new DockPanel(); var add = Button("+ New input", () => { sources.SelectedItem = null; draftBrowserId = Guid.NewGuid(); browsers.Detach(browserPanel); browserSession = null; name.Text = "Live input"; address.Text = ""; return Task.CompletedTask; }); DockPanel.SetDock(add, Dock.Bottom); left.Children.Add(add); var delete = Button("Delete selected input", DeleteInput); DockPanel.SetDock(delete, Dock.Bottom); left.Children.Add(delete); left.Children.Add(sources); setup.Children.Add(left);
+        var setup = new Grid(); setup.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(235) }); setup.ColumnDefinitions.Add(new ColumnDefinition()); setup.ColumnDefinitions.Add(browserColumn);
+        var left = new DockPanel(); var sourceHeading = new TextBlock { Text = "SAVED SOURCES", FontSize = 10, Foreground = SettingsUi.Ink("#93B5C6"), Margin = new Thickness(4, 2, 4, 12) }; DockPanel.SetDock(sourceHeading, Dock.Top); left.Children.Add(sourceHeading);
+        var add = Button("+ New input", () => { sources.SelectedItem = null; draftBrowserId = Guid.NewGuid(); browsers.Detach(browserPanel); browserSession = null; name.Text = "Live input"; address.Text = ""; return Task.CompletedTask; }); DockPanel.SetDock(add, Dock.Bottom); left.Children.Add(add); var delete = Button("Delete selected input", DeleteInput); DockPanel.SetDock(delete, Dock.Bottom); left.Children.Add(delete); left.Children.Add(sources); setup.Children.Add(SettingsUi.Card(left, new Thickness(0, 8, 10, 0)));
         Grid.SetColumn(browserArea, 2); setup.Children.Add(browserArea);
         var browserTools = new WrapPanel(); browserTools.Children.Add(Button("Load preview", LoadAnyPreview)); browserTools.Children.Add(Button("Refresh", () => { browserSession?.View.CoreWebView2.Reload(); return Task.CompletedTask; }));
         browserTools.Children.Add(Button("Zoom −", () => { if (browserSession is not null) browserSession.View.ZoomFactor = Math.Max(.25, browserSession.View.ZoomFactor - .1); return Task.CompletedTask; }));
         browserTools.Children.Add(Button("Zoom +", () => { if (browserSession is not null) browserSession.View.ZoomFactor = Math.Min(3, browserSession.View.ZoomFactor + .1); return Task.CompletedTask; }));
         browserTools.Children.Add(Button("Listen / mute preview", () => { if (browserSession is not null) browsers.SetPreviewAudio(browserSession, !browserSession.PreviewAudio); return Task.CompletedTask; }));
         DockPanel.SetDock(browserTools, Dock.Top); browserArea.Children.Add(browserTools); DockPanel.SetDock(browserStatus, Dock.Bottom); browserArea.Children.Add(browserStatus); browserArea.Children.Add(browserPanel);
-        var form = new StackPanel { Margin = new Thickness(12) }; Grid.SetColumn(form, 1); setup.Children.Add(new ScrollViewer { Content = form, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }.AtColumn(1));
+        var form = new StackPanel { Margin = new Thickness(3) }; SettingsUi.Section(form, "Source connection");
+        var formActions = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
+        var editor = new DockPanel(); DockPanel.SetDock(formActions, Dock.Bottom); editor.Children.Add(formActions);
+        editor.Children.Add(new ScrollViewer { Content = form, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
+        setup.Children.Add(SettingsUi.Card(editor, new Thickness(0, 8, 0, 0)).AtColumn(1));
         Field(form, "Input name", name); Field(form, "Input type", type); Field(form, "Source URL (Screen: screen://)", address); form.Children.Add(support);
         Field(captureOptions, "Video capture device", videoDevice); Field(captureOptions, "Audio capture device (select explicitly)", audioDevice);
         captureOptions.Children.Add(Button("Refresh capture devices", () => { RefreshDevices(); return Task.CompletedTask; })); form.Children.Add(captureOptions);
@@ -73,12 +80,15 @@ public sealed class LiveInputsWindow : Window
         form.Children.Add(ndiOptions);
         form.Children.Add(Button("Load source preview", LoadAnyPreview));
         address.KeyDown += async (_, e) => { if (e.Key == System.Windows.Input.Key.Enter && (string)type.SelectedItem == "Browser") { e.Handled = true; await Run(LoadBrowser); } };
-        Field(form, "Network buffer (ms) — this is not measured end-to-end latency", cache); form.Children.Add(deinterlace);
-        Field(form, "No fresh video timeout (seconds)", timeout); Field(form, "Backup clip (loops until operator takes another clip)", backup);
-        form.Children.Add(mute); Field(form, "Input audio gain (−60 to +6 dB)", gain);
-        var actions = new WrapPanel(); actions.Children.Add(Button("Save input (Browser: add to playlist)", () => Save())); actions.Children.Add(Button("Start preview", StartPreview)); actions.Children.Add(Button("Stop preview", StopPreview)); form.Children.Add(actions);
-        Field(form, "Destination", port); var take = new WrapPanel(); take.Children.Add(Button("TAKE / CUT LIVE", Take)); take.Children.Add(Button("Back to Playlist", () => send(new EngineCommand { Action = "Live.Back", Channel = port.SelectedIndex + 1 }))); form.Children.Add(take);
-        Field(form, "Playlist live duration (seconds)", duration); Field(form, "Optional scheduled start (local yyyy-MM-dd HH:mm:ss)", schedule); form.Children.Add(Button("Add Live item to playlist", AddToPlaylist));
+        var signal = new StackPanel();
+        Field(signal, "Network buffer (ms) — not measured end-to-end latency", cache); signal.Children.Add(deinterlace);
+        Field(signal, "No fresh video timeout (seconds)", timeout); Field(signal, "Backup clip (loops until another clip is taken)", backup);
+        signal.Children.Add(mute); Field(signal, "Input audio gain (−60 to +6 dB)", gain);
+        form.Children.Add(new Expander { Header = "Signal protection & audio", Foreground = SettingsUi.Ink("#BAD2E3"), Margin = new Thickness(3, 14, 3, 10), Content = signal });
+        var actions = new WrapPanel(); actions.Children.Add(Button("Save input", () => Save())); actions.Children.Add(Button("Start preview", StartPreview)); actions.Children.Add(Button("Stop preview", StopPreview)); formActions.Children.Add(actions);
+        Field(formActions, "Program destination", port); var take = new WrapPanel(); take.Children.Add(Button("TAKE / CUT LIVE", Take)); take.Children.Add(Button("Back to Playlist", () => send(new EngineCommand { Action = "Live.Back", Channel = port.SelectedIndex + 1 }))); formActions.Children.Add(take);
+        var scheduling = new StackPanel(); Field(scheduling, "Playlist live duration (seconds)", duration); Field(scheduling, "Scheduled start (local yyyy-MM-dd HH:mm:ss)", schedule); scheduling.Children.Add(Button("Add Live item to playlist", AddToPlaylist));
+        form.Children.Add(new Expander { Header = "Playlist & scheduling", Foreground = SettingsUi.Ink("#BAD2E3"), Content = scheduling, Margin = new Thickness(3, 16, 3, 8) });
         tabs.Items.Add(new TabItem { Header = "Inputs / Take", Content = setup });
         tabs.Items.Add(new TabItem { Header = "Multi-viewer", Content = new ScrollViewer { Content = monitors, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } });
         tabs.Items.Add(new TabItem { Header = "Adapters & features", Content = new ScrollViewer { Content = new TextBlock { Margin = new Thickness(20), TextWrapping = TextWrapping.Wrap, FontSize = 14, Text =
@@ -95,9 +105,9 @@ public sealed class LiveInputsWindow : Window
         Closed += async (_, _) => { closed = true; foreach (var id in ownedPreviews) { try { await client.LivePreview(new EngineCommand { Action = "Stop", MediaId = id }); browsers.Ndi.Unmonitor(id); if (!LiveUsage.IsOnAir(await client.GetState(), id)) { browsers.Ndi.Stop(id); browsers.Stop(id); } } catch { } } inputReader.Dispose(); browsers.Detach(browserPanel); poll.Stop(); frames.Stop(); foreach (var w in previewWindows.Values.ToArray()) w.Close(); foreach (var tile in tiles.Values) tile.Reader.Dispose(); };
         frames.Tick += (_, _) => { if (browserSession is { Disposed: false }) { var core = browserSession.View.CoreWebView2; browserStatus.Text = browserSession.Status + $"\nPublished frames: {browserSession.Frames}. Click inside the page to use mouse and keyboard.\nAudio: {(core?.IsMuted == true ? "MUTED" : core?.IsDocumentPlayingAudio == true ? "PLAYING" : "NO PAGE AUDIO")} · Windows default output.\nKeep the console open. Browser audio is not embedded in SDI/NDI; port gain/device selection does not control it. Use the page player / Windows mixer."; } };
     }
-    private Button Button(string text, Func<Task> action) { var b = new Button { Content = text }; b.Click += async (_, _) => await Run(action); return b; }
+    private Button Button(string text, Func<Task> action) { var b = new Button { Content = text }; SettingsUi.Action(b, text); b.Click += async (_, _) => { b.IsEnabled = false; try { await Run(action); } finally { b.IsEnabled = true; } }; return b; }
     private async Task Run(Func<Task> action) { try { await action(); } catch (Exception ex) { message.Text = ex.Message; } }
-    private static void Field(Panel panel, string label, UIElement control) { panel.Children.Add(new TextBlock { Text = label, Margin = new Thickness(4, 8, 0, 0) }); panel.Children.Add(control); }
+    private static void Field(Panel panel, string label, UIElement control) { panel.Children.Add(new TextBlock { Text = label, Foreground = SettingsUi.Ink("#AFC2D4"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(4, 12, 4, 5) }); panel.Children.Add(control); }
     private MediaAsset Selected => sources.SelectedItem as MediaAsset ?? throw new InvalidOperationException("Select or save a live input first");
     private async Task Refresh(Guid? selected = null)
     {

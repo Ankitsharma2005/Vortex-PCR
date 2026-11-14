@@ -1,5 +1,6 @@
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading.Channels;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using NAudio.Wave;
@@ -71,6 +72,20 @@ public sealed class NdiSources(EngineClient client) : IDisposable
         IntPtr receiver = IntPtr.Zero, sourceName = IntPtr.Zero;
         var outputs = new Dictionary<int, NdiAudioRender>();
         var lastVideo = DateTime.MinValue;
+        var pendingVideo = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(1) { SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.DropOldest });
+        var upload = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var jpeg in pendingVideo.Reader.ReadAllAsync(session.Cancel.Token))
+                {
+                    await client.BrowserFrame(id, jpeg, session.Cancel.Token);
+                    Interlocked.Increment(ref session.VideoFrames);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { session.Status = "NDI frame upload: " + ex.Message; session.Cancel.Cancel(); }
+        });
         try
         {
             sourceName = Marshal.StringToCoTaskMemUTF8(Uri.UnescapeDataString(session.Path[6..]));
@@ -94,7 +109,8 @@ public sealed class NdiSources(EngineClient client) : IDisposable
                         if (scale < 1) picture = new TransformedBitmap(picture, new ScaleTransform(scale, scale));
                         var encoder = new JpegBitmapEncoder { QualityLevel = 85 }; encoder.Frames.Add(BitmapFrame.Create(picture));
                         using var stream = new MemoryStream(); encoder.Save(stream);
-                        await client.BrowserFrame(id, stream.ToArray()); lastVideo = DateTime.UtcNow; Interlocked.Increment(ref session.VideoFrames);
+                        // Network upload must not block the native receiver's audio capture.
+                        pendingVideo.Writer.TryWrite(stream.ToArray()); lastVideo = DateTime.UtcNow;
                         session.Status = $"NDI {video.Width}×{video.Height} · video bridge up to 30 fps · independent program/preview audio routes";
                     }
                     finally { NdiNative.NDIlib_recv_free_video_v2(receiver, ref video); }
@@ -128,7 +144,7 @@ public sealed class NdiSources(EngineClient client) : IDisposable
             }
         }
         catch (Exception ex) { session.Status = ex.Message; }
-        finally { Volatile.Write(ref session.RenderCount, 0); session.Left = session.Right = 0; foreach (var render in outputs.Values) render.Dispose(); if (receiver != IntPtr.Zero) NdiNative.NDIlib_recv_destroy(receiver); if (sourceName != IntPtr.Zero) Marshal.FreeCoTaskMem(sourceName); }
+        finally { session.Cancel.Cancel(); pendingVideo.Writer.TryComplete(); await upload; Volatile.Write(ref session.RenderCount, 0); session.Left = session.Right = 0; foreach (var render in outputs.Values) render.Dispose(); if (receiver != IntPtr.Zero) NdiNative.NDIlib_recv_destroy(receiver); if (sourceName != IntPtr.Zero) Marshal.FreeCoTaskMem(sourceName); }
     }
     public void Stop(Guid id) { monitored.Remove(id); if (sessions.Remove(id, out var session)) { session.Routes = []; session.Cancel.Cancel(); } }
     public void Dispose() { foreach (var id in sessions.Keys.ToArray()) Stop(id); }

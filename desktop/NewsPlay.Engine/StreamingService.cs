@@ -13,7 +13,14 @@ public sealed class StreamingService(VlcDecoder one, VlcDecoder two) : IDisposab
     public void Start(StreamProfile profile)
     {
         profile.Validate();
+        if (profile.TlsCaFile.Length > 0 && !File.Exists(profile.TlsCaFile)) throw new InvalidOperationException("Selected TLS CA certificate file is unavailable on this PC");
         var decoder = profile.Port == 1 ? one : two;
+        if (profile.Width > 1920 && decoder.ProductionFormat is null) throw new InvalidOperationException("Select and validate a project production format before UHD streaming");
+        if (profile.Width > 1920)
+        {
+            var compatibility = VideoFormatProbe.Check(new ProjectVideoFormat("Streaming output", profile.Width, profile.Height, profile.Fps));
+            if (!compatibility.Supported) throw new InvalidOperationException("UHD streaming conversion is not enabled on this PC: " + compatibility.Message);
+        }
         if (decoder.AudioSampleRate != 48000) throw new InvalidOperationException("Set program audio to 48000 Hz before streaming");
         var executable = Path.Combine(AppContext.BaseDirectory, "ffmpeg", "ffmpeg.exe");
         if (!File.Exists(executable)) throw new InvalidOperationException("Bundled FFmpeg encoder is missing");
@@ -37,24 +44,19 @@ public sealed class StreamingService(VlcDecoder one, VlcDecoder two) : IDisposab
         private readonly NamedPipeServerStream videoPipe, audioPipe;
         private readonly Task worker;
         private volatile string state = "Connecting", message = "Waiting for encoder / destination";
-        private long frames;
+        private long frames, droppedFrames;
         private int audioResetVersion;
-        public StreamStatus Status => new(profile.Id, profile.Name, profile.Port, state, Interlocked.Read(ref frames), message);
+        private readonly int inputWidth, inputHeight;
+        public StreamStatus Status => new(profile.Id, profile.Name, profile.Port, state, Interlocked.Read(ref frames), message, Interlocked.Read(ref droppedFrames), $"{profile.Width}x{profile.Height}p{profile.Fps} · {profile.VideoCodec} · production {inputWidth}x{inputHeight} · source {decoder.SourceWidth}x{decoder.SourceHeight}" + (inputWidth < profile.Width || inputHeight < profile.Height || decoder.SourceWidth < profile.Width || decoder.SourceHeight < profile.Height ? " · upscaled / source below output raster" : ""));
         public Session(StreamProfile profile, VlcDecoder decoder, string executable)
         {
             this.profile = profile; this.decoder = decoder;
+            inputWidth = decoder.ProductionFormat?.Width ?? 960; inputHeight = decoder.ProductionFormat?.Height ?? 540;
             var token = "NewsPlayStream" + Guid.NewGuid().ToString("N");
             videoPipe = new(token + "v", PipeDirection.Out, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
             audioPipe = new(token + "a", PipeDirection.Out, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
             var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true };
-            string[] args = ["-hide_banner", "-loglevel", "error", "-nostdin", "-thread_queue_size", "8", "-f", "rawvideo", "-pixel_format", "bgra", "-video_size", "960x540", "-framerate", profile.Fps.ToString(), "-i", @"\\.\pipe\" + token + "v", "-thread_queue_size", "64", "-f", "s16le", "-ar", "48000", "-ac", "2", "-i", @"\\.\pipe\" + token + "a", "-c:v", profile.VideoEncoder, "-pix_fmt", "yuv420p", "-vf", $"scale={profile.Width}:{profile.Height}", "-b:v", profile.VideoKbps + "k", "-maxrate", profile.VideoKbps + "k", "-bufsize", (profile.VideoKbps * 2) + "k", "-g", (profile.Fps * 2).ToString(), "-c:a", profile.AudioCodec, "-b:a", profile.AudioKbps + "k", "-f", profile.Protocol == "RTMP" ? "flv" : "mpegts", profile.Destination()];
-            if (profile.VideoEncoder == "libx264") { start.ArgumentList.Add("-preset"); start.ArgumentList.Add("veryfast"); start.ArgumentList.Add("-tune"); start.ArgumentList.Add("zerolatency"); }
-            start.ArgumentList.Add("-progress"); start.ArgumentList.Add("pipe:1");
-            foreach (var arg in args)
-            {
-                if (arg == "-i") { start.ArgumentList.Add("-probesize"); start.ArgumentList.Add("32"); start.ArgumentList.Add("-analyzeduration"); start.ArgumentList.Add("0"); }
-                start.ArgumentList.Add(arg);
-            }
+            foreach (var arg in StreamingArguments.Build(profile, inputWidth, inputHeight, @"\\.\pipe\" + token + "v", @"\\.\pipe\" + token + "a")) start.ArgumentList.Add(arg);
             try { process = Process.Start(start)!; }
             catch { videoPipe.Dispose(); audioPipe.Dispose(); throw; }
             decoder.HardwareAudio += Samples; decoder.HardwareAudioReset += Reset;
@@ -100,13 +102,13 @@ public sealed class StreamingService(VlcDecoder one, VlcDecoder two) : IDisposab
         private async Task PumpVideo()
         {
             await videoPipe.WaitForConnectionAsync(cancel.Token);
-            var source = new byte[960 * 540 * 4]; var target = new byte[source.Length]; var clock = Stopwatch.StartNew(); long tick = 0;
+            var source = new byte[inputWidth * inputHeight * 4]; var target = new byte[source.Length]; var clock = Stopwatch.StartNew(); long tick = 0;
             while (!cancel.IsCancellationRequested)
             {
-                if (decoder.CopyHardwareFrame(source, out var w, out var h)) DeckLinkOutputService.Scale(source, w, h, target, 960, 540, 3840);
+                if (decoder.CopyProductionFrame(source, out var w, out var h, out _)) VideoRaster.Scale(source, w, h, target, inputWidth, inputHeight);
                 await videoPipe.WriteAsync(target, cancel.Token);
                 await Pace(clock, ++tick);
-                if (clock.Elapsed.TotalMilliseconds - tick * 1000d / profile.Fps > 1000) tick = (long)(clock.Elapsed.TotalSeconds * profile.Fps);
+                if (clock.Elapsed.TotalMilliseconds - tick * 1000d / profile.Fps > 1000) { var current = (long)(clock.Elapsed.TotalSeconds * profile.Fps); Interlocked.Add(ref droppedFrames, current - tick); tick = current; }
             }
         }
         private async Task PumpAudio()

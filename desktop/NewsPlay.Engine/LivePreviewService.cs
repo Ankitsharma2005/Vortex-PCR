@@ -5,6 +5,12 @@ namespace NewsPlay.Engine;
 
 public sealed class LivePreviewService(LibVLC vlc, string instance) : IDisposable
 {
+    private HardwareDecodeSettings hardwareDecoding = new();
+    public void ConfigureHardwareDecoding(HardwareDecodeSettings settings)
+    {
+        settings.Validate(); hardwareDecoding = settings;
+        foreach (var input in inputs.Values) input.Decoder.ConfigureHardwareDecoding(settings);
+    }
     private sealed class Input
     {
         public required MediaAsset Asset;
@@ -26,6 +32,7 @@ public sealed class LivePreviewService(LibVLC vlc, string instance) : IDisposabl
         if (inputs.Count >= 8) throw new InvalidOperationException("Maximum eight monitored live inputs");
         var slot = Enumerable.Range(10, 8).First(s => inputs.Values.All(i => i.Slot != s));
         var input = new Input { Asset = Json.Copy(asset), Decoder = new VlcDecoder(vlc, instance, slot), Slot = slot };
+        input.Decoder.ConfigureHardwareDecoding(hardwareDecoding);
         try { input.Decoder.SetAudio(0, true); input.Decoder.Load(asset, 0, true); input.Decoder.SetAudio(0, true); inputs.Add(asset.Id, input); }
         catch { input.Decoder.Dispose(); throw; }
     }

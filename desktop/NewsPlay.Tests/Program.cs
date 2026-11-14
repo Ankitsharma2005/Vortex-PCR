@@ -4,6 +4,29 @@ using LibVLCSharp.Shared;
 using System.Text;
 
 var passed = 0; var failed = 0;
+Test("GPU decoder settings validate and preserve software fallback/override policy", () =>
+{
+    Equal("any", new HardwareDecodeSettings().VlcBackend()); Equal("d3d11va", new HardwareDecodeSettings("D3D11VA").VlcBackend());
+    Equal("dxva2", new HardwareDecodeSettings("DXVA2").VlcBackend()); Equal("none", new HardwareDecodeSettings("CPU").VlcBackend());
+    Equal("none", new HardwareDecodeSettings("D3D11VA").VlcBackend(true)); Throws(() => new HardwareDecodeSettings("unknown").Validate());
+    var settings = Json.Copy(new EngineState { HardwareDecoding = new("DXVA2") }); Equal("DXVA2", settings.HardwareDecoding.Mode);
+    var legacy = System.Text.Json.JsonSerializer.Deserialize<EngineState>("{}", Json.Options)!; Equal("Auto", legacy.HardwareDecoding.Mode);
+});
+Test("Master project format protects timecode consistency without changing legacy format behavior", () =>
+{
+    var f = new Fixture(); f.C.State.ProjectVideoFormat = "1080p25";
+    Throws(() => f.C.Execute(new EngineCommand { Channel = 1, Action = "Format", Text = "2160p25" })); Equal("1080p25", f.C.Channel(1).Format);
+    f.C.State.ProjectVideoFormat = null; f.C.Execute(new EngineCommand { Channel = 1, Action = "Format", Text = "2160p25" }); Equal("2160p25", f.C.Channel(1).Format);
+});
+Test("DeckLink channel routing preserves PCM timestamps and silences unmapped channels", () =>
+{
+    var route = new DeckLinkRoute { AudioChannels = 8, AudioLeftChannel = 3, AudioRightChannel = 6 };
+    var packet = route.RouteAudio(new([1, 2, 3, 4, 5, 6, 7, 8], 123456));
+    Equal(123456L, packet.PresentationMicroseconds); Equal(32, packet.Bytes.Length);
+    Equal((byte)1, packet.Bytes[4]); Equal((byte)3, packet.Bytes[10]); Equal((byte)5, packet.Bytes[20]); Equal((byte)7, packet.Bytes[26]);
+    Equal(true, packet.Bytes.Take(4).All(b => b == 0));
+    route.AudioRightChannel = 3; Throws(route.ValidateAudio);
+});
 Test("Auto audio balances loud and quiet stereo clips, limits peaks and preserves silence", () =>
 {
     var level = new AudioLeveler(); level.Configure(new() { Enabled = true, MaxBoostDb = 24 });
@@ -133,6 +156,16 @@ Test("Live profile deletion cannot be undone into dangling media references", ()
 Test("Deleting a live input requires confirmation and stops both references", () => { var t = new Fixture(); var input = Live(t); var item = PlayoutController.NewItem(input); t.C.Execute(new EngineCommand { Action = "Live.Add", Item = item }); t.C.Execute(new EngineCommand { Action = "Live.Take", Channel = 1, MediaId = input.Id }); Throws(() => t.C.Execute(new EngineCommand { Action = "Live.Delete", MediaId = input.Id })); Equal(true, t.C.State.Media.Any(m => m.Id == input.Id)); t.C.Execute(new EngineCommand { Action = "Live.Delete", MediaId = input.Id, Confirm = true }); Equal(false, t.C.State.Media.Any(m => m.Id == input.Id)); Equal(false, t.C.State.Rundowns.SelectMany(p => p.Items).Any(i => i.MediaId == input.Id)); Equal("Stopped", t.C.Channel(1).Status); Equal(false, t.C.Channel(1).LiveInputId.HasValue); });
 Test("Live source release only advances after its last rundown reference is removed", () => { var t = new Fixture(); var input = Live(t); var a = PlayoutController.NewItem(input); var b = PlayoutController.NewItem(input); t.C.Execute(new EngineCommand { Action = "Live.Add", Item = a }); t.C.Execute(new EngineCommand { Action = "Live.Add", Item = b }); t.C.Execute(new EngineCommand { Action = "Rundown.Remove", ItemId = a.Id }); Equal(0L, t.C.Media(input.Id).LiveReleaseRevision); t.C.Execute(new EngineCommand { Action = "Rundown.Remove", ItemId = b.Id }); Equal(1L, t.C.Media(input.Id).LiveReleaseRevision); });
 Test("Streaming validates protocol, bitrate and SRT mode without command interpolation", () => { var p = new StreamProfile { Protocol = "SRT listener", Url = "srt://127.0.0.1:9000?mode=caller&latency=200000" }; Equal(true, p.Destination().Contains("mode=listener")); Equal(false, p.Destination().Contains("mode=caller")); p.Url = "file:///C:/overwrite.ts"; Throws(p.Validate); p.Protocol = "RTMP"; p.Url = "rtmps://example.com/live/key"; p.Validate(); p.VideoKbps = -1; Throws(p.Validate); });
+Test("Streaming keys preserve ingest authentication parameters and protocol rules", () =>
+{
+    Equal("rtmps://example.com/live/key", StreamProfile.IngestUrl("RTMP", " rtmps://example.com/live/ ", " key "));
+    Equal("rtmps://example.com/live/key?auth=token", StreamProfile.IngestUrl("RTMP", "rtmps://example.com/live/?auth=token", "key"));
+    Equal("rtmp://example.com/live/full-key", StreamProfile.IngestUrl("RTMP", "rtmp://example.com/live/full-key", ""));
+    Equal("srt://example.com:9000?latency=200000", StreamProfile.IngestUrl("SRT caller", "srt://example.com:9000?latency=200000", "unused"));
+    Throws(() => StreamProfile.IngestUrl("RTMP", "rtmp://example.com/live", "bad\nkey"));
+    var profile = new StreamProfile { Url = "rtmps://example.com/live/key", AudioCodec = "ac3" }; Throws(profile.Validate);
+    profile.Protocol = "UDP"; profile.Url = "udp://example.com:1234"; profile.Validate();
+});
 Test("DeckLink compatibility selects available interface and preserves out arguments", () => { var api = DeckLinkApiView.Find(new LegacyApiProbe(), typeof(IUnavailableApiProbe), typeof(ILegacyApiProbe))!; Equal(typeof(ILegacyApiProbe), api.Interface); object?[] args = [0L]; api.Call("Read", args); Equal(48000L, (long)args[0]!); });
 Test("DeckLink compatibility preserves driver HRESULT instead of reflection wrapper", () => { var api = new DeckLinkApiView(new LegacyApiProbe(), typeof(ILegacyApiProbe)); try { api.Call("Fail"); throw new Exception("Expected driver rejection"); } catch (System.Runtime.InteropServices.COMException ex) { Equal(unchecked((int)0x80070057), ex.HResult); } });
 Test("Embedded hardware PCM tap uses stereo Int16 gain and resets on pause", () => { using var audio = new PcmAudioOutput(); byte[]? captured = null; var resets = 0; audio.HardwareSamples += data => captured = data; audio.HardwareReset += () => resets++; var ptr = System.Runtime.InteropServices.Marshal.AllocHGlobal(8); try { System.Runtime.InteropServices.Marshal.Copy(new short[] { 10000, -10000, 20000, -20000 }, 0, ptr, 4); audio.Gain(0, false); audio.Samples(ptr, 2); Equal(8, captured!.Length); Equal((short)10000, BitConverter.ToInt16(captured, 0)); Equal((short)-10000, BitConverter.ToInt16(captured, 2)); audio.Gain(0, true); audio.Samples(ptr, 2); Equal((short)0, BitConverter.ToInt16(captured!, 0)); audio.Pause(); Equal(true, resets >= 2); } finally { System.Runtime.InteropServices.Marshal.FreeHGlobal(ptr); } });

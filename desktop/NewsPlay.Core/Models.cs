@@ -129,6 +129,11 @@ public sealed class ScheduledTake
 }
 public sealed class EngineState
 {
+    // Null preserves the legacy processing path for projects saved before this feature.
+    public string? ProjectVideoFormat { get; set; }
+    public HardwareDecodeSettings HardwareDecoding { get; set; } = new();
+    public List<DeckLinkRoute> DeckLinkRoutes { get; set; } = [];
+    public List<StreamProfile> StreamProfiles { get; set; } = [];
     public int Version { get; set; } = 1;
     public List<MediaAsset> Media { get; set; } = [];
     public List<Rundown> Rundowns { get; set; } = [];

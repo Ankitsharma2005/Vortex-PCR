@@ -11,6 +11,7 @@
 !/desktop/NewsPlay.Desktop/
 !/desktop/NewsPlay.Tests/
 !/desktop/NewsPlay.AudioTimingChecks/
+!/desktop/NewsPlay.ProjectVideoChecks/
 **/bin/
 **/obj/
 **/node_modules/

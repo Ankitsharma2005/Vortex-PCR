@@ -36,12 +36,33 @@ try
 {
     LibVLCSharp.Shared.Core.Initialize(Path.Combine(AppContext.BaseDirectory, "libvlc", "win-x64"));
     using var vlc = new LibVLC("--no-video-title-show", "--no-snapshot-preview", "--quiet");
+    using var hardwareDecodeMonitor = new HardwareDecodeMonitor(vlc);
     using var d1 = new VlcDecoder(vlc, instance, 1); using var d2 = new VlcDecoder(vlc, instance, 2); using var editDecoder = new VlcDecoder(vlc, instance, 3);
     using var sourceDecoder = new VlcDecoder(vlc, instance, 4);
     using var colourDecoder = new VlcDecoder(vlc, instance, 5);
     using var livePreviews = new LivePreviewService(vlc, instance);
     using var db = new SqliteStore(data); var gate = new object();
+    var savedState = db.Load();
+    var decoding = savedState?.HardwareDecoding ?? new HardwareDecodeSettings();
+    try { decoding.Validate(); } catch { decoding = new(); }
+    foreach (var decoder in new[] { d1, d2, editDecoder, sourceDecoder, colourDecoder }) decoder.ConfigureHardwareDecoding(decoding);
+    livePreviews.ConfigureHardwareDecoding(decoding);
+    var savedProjectFormat = savedState?.ProjectVideoFormat;
+    string? projectRestoreError = null;
+    if (savedProjectFormat is not null)
+    {
+        try
+        {
+            var restored = ProjectVideoFormat.Find(savedProjectFormat);
+            var capability = VideoFormatProbe.Check(restored);
+            if (!capability.Supported) throw new InvalidOperationException(capability.Message);
+            d1.ConfigureProject(restored); d2.ConfigureProject(restored);
+        }
+        catch (Exception ex) { d1.ConfigureProject(null); d2.ConfigureProject(null); projectRestoreError = "Saved production format was not enabled on this PC: " + ex.Message; }
+    }
     var controller = new PlayoutController(db, new Dictionary<int, IDecoder> { [1] = d1, [2] = d2 }); var probe = new MediaProbe(vlc);
+    controller.State.HardwareDecoding = decoding; controller.Save();
+    if (projectRestoreError is not null) controller.Alarm(projectRestoreError);
     var keyFile = Path.Combine(data, "engine.key");
     if (!File.Exists(keyFile)) File.WriteAllText(keyFile, Convert.ToHexString(RandomNumberGenerator.GetBytes(32)));
     var key = File.ReadAllText(keyFile).Trim();
@@ -111,11 +132,64 @@ try
     });
     app.MapGet("/state", () => { lock (gate) return Results.Json(Json.Copy(controller.State), Json.Options); });
     app.MapGet("/audio-sync", () => new[] { d1.AudioSyncStatus, d2.AudioSyncStatus });
+    app.MapGet("/hardware-decoding", () => new { settings = controller.State.HardwareDecoding, observations = hardwareDecodeMonitor.Status, ports = new[] { d1.HardwareDecodeStatus, d2.HardwareDecodeStatus }, note = "Settings apply to the next media load. Existing playback is not restarted. GPU decoding is separate from CPU raster scaling. Browser/NDI bridge pictures do not use this compressed-video decoder." });
+    app.MapPost("/hardware-decoding", (HardwareDecodeSettings settings) =>
+    {
+        settings.Validate();
+        lock (gate)
+        {
+            var previous = controller.State.HardwareDecoding;
+            controller.State.HardwareDecoding = settings;
+            try { controller.Save(); } catch { controller.State.HardwareDecoding = previous; throw; }
+            foreach (var decoder in new[] { d1, d2, editDecoder, sourceDecoder, colourDecoder }) decoder.ConfigureHardwareDecoding(settings);
+            livePreviews.ConfigureHardwareDecoding(settings);
+        }
+        return Results.Ok();
+    });
+    app.MapPost("/hardware-decoding/probe", async (HardwareDecodeProbeRequest request, HttpContext context) => await HardwareDecodeProbe.Run(request, data, context.RequestAborted));
     app.MapGet("/audio-levels", () => new[] { new[] { d1.AudioLeft, d1.AudioRight }, new[] { d2.AudioLeft, d2.AudioRight } });
     using var deckLink = new DeckLinkOutputService(d1, d2);
     using var streaming = new StreamingService(d1, d2);
+    app.MapGet("/project-video/status", () => new { selected = controller.State.ProjectVideoFormat, restoreError = projectRestoreError, active = d1.ProductionFormat?.Id, formats = ProjectVideoFormat.Supported, ports = new[] { d1.ProductionStatus, d2.ProductionStatus }, cpuLogicalProcessors = Environment.ProcessorCount,
+        workingMemoryBytes = Process.GetCurrentProcess().WorkingSet64, resources = VideoResourceMonitor.Snapshot(), gpuScaling = "CPU raster conversion; hardware decoding requested where available", hardwareVerified = false });
+    app.MapPost("/project-video/check", async (EngineCommand cmd) => await Task.Run(() => VideoFormatProbe.Check(ProjectVideoFormat.Find(cmd.Text ?? ""))));
+    app.MapPost("/project-video/apply", async (EngineCommand cmd) =>
+    {
+        var requested = ProjectVideoFormat.Find(cmd.Text ?? "");
+        var report = await Task.Run(() => VideoFormatProbe.Check(requested));
+        if (!report.Supported) throw new InvalidOperationException(report.Message);
+        lock (gate)
+        {
+            if (controller.State.Channels.Any(c => c.Status != "Stopped" || c.Emergency)) throw new InvalidOperationException("Stop both program ports before changing the project video format");
+            if (deckLink.Status().Any(s => s.Running) || streaming.Status().Length > 0) throw new InvalidOperationException("Stop DeckLink and streaming outputs before changing the project format");
+            var previous = d1.ProductionFormat; var previousSaved = controller.State.ProjectVideoFormat;
+            var previousTimecodes = controller.State.Channels.Select(c => c.Format).ToArray();
+            try
+            {
+                d1.ConfigureProject(requested); d2.ConfigureProject(requested);
+                controller.State.ProjectVideoFormat = requested.Id;
+                foreach (var c in controller.State.Channels) c.Format = requested.Id;
+                controller.Save(); projectRestoreError = null;
+            }
+            catch
+            {
+                controller.State.ProjectVideoFormat = previousSaved;
+                for (int i = 0; i < previousTimecodes.Length; i++) controller.State.Channels[i].Format = previousTimecodes[i];
+                d1.ConfigureProject(previous); d2.ConfigureProject(previous); throw;
+            }
+        }
+        return Results.Json(report, Json.Options);
+    });
     app.MapGet("/stream/status", () => Results.Json(streaming.Status(), Json.Options));
-    app.MapPost("/stream/start", (StreamProfile profile) => { streaming.Start(profile); return Results.Ok(); });
+    app.MapGet("/stream/profiles", () => { lock (gate) return Results.Json(controller.State.StreamProfiles, Json.Options); });
+    app.MapPost("/stream/profile", (StreamProfile profile) =>
+    {
+        var validated = Json.Copy(profile); validated.Url = validated.Protocol == "RTMP" ? "rtmp://example.invalid/live" : validated.Protocol == "RTMPS" ? "rtmps://example.invalid/live" : validated.Protocol == "UDP" ? "udp://example.invalid:9000" : "srt://example.invalid:9000";
+        validated.Validate(); validated.Url = "";
+        lock (gate) { controller.State.StreamProfiles.RemoveAll(p => p.Id == validated.Id); controller.State.StreamProfiles.Add(validated); controller.Save(); }
+        return Results.Ok();
+    });
+    app.MapPost("/stream/start", (StreamProfile profile) => { streaming.Start(profile); lock (gate) { var saved = Json.Copy(profile); saved.Url = ""; controller.State.StreamProfiles.RemoveAll(p => p.Id == saved.Id); controller.State.StreamProfiles.Add(saved); controller.Save(); } return Results.Ok(); });
     app.MapPost("/stream/stop", async (StreamProfile profile) => { await streaming.Stop(profile.Id); return Results.Ok(); });
     app.MapGet("/decklink/devices", async () => Results.Json(await Task.Run(DeckLinkOutputService.Scan), Json.Options));
     app.MapGet("/decklink/status", () => Results.Json(deckLink.Status(), Json.Options));
@@ -127,7 +201,9 @@ try
             if (channel.Status == "Playing" || channel.Emergency) throw new InvalidOperationException("Pause or stop this program before enabling DeckLink output");
             if (route.Audio && channel.AudioSampleRate != 48000) throw new InvalidOperationException("Set program audio to 48000 Hz first");
         }
-        await deckLink.Start(route); return Results.Json(deckLink.Status(), Json.Options);
+        await deckLink.Start(route);
+        lock (gate) { controller.State.DeckLinkRoutes.RemoveAll(r => r.Port == route.Port); controller.State.DeckLinkRoutes.Add(Json.Copy(route)); controller.Save(); }
+        return Results.Json(deckLink.Status(), Json.Options);
     });
     app.MapPost("/decklink/stop", async (DeckLinkRoute route) => { await deckLink.Stop(route.Port); return Results.Ok(); });
     app.MapPost("/browser/frame/{id:guid}", (Guid id, HttpContext context) => browserFrames.Upload(id, context));

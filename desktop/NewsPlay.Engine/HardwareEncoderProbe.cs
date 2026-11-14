@@ -7,7 +7,6 @@ internal static class HardwareEncoderProbe
 {
     public static void Check(string executable, StreamProfile profile)
     {
-        if (profile.VideoEncoder == "libx264") return;
         var start = new ProcessStartInfo(executable)
         {
             UseShellExecute = false, CreateNoWindow = true,
@@ -17,6 +16,8 @@ internal static class HardwareEncoderProbe
             $"color=black:size={profile.Width}x{profile.Height}:rate={profile.Fps}",
             "-frames:v", "2", "-an", "-c:v", profile.VideoEncoder, "-pix_fmt", "yuv420p", "-f", "null", "-"];
         foreach (var arg in args) start.ArgumentList.Add(arg);
+        if (profile.EncoderProfile != "auto") { start.ArgumentList.Insert(start.ArgumentList.Count - 3, "-profile:v"); start.ArgumentList.Insert(start.ArgumentList.Count - 3, profile.EncoderProfile); }
+        if (profile.EncoderLevel != "auto") { start.ArgumentList.Insert(start.ArgumentList.Count - 3, "-level:v"); start.ArgumentList.Insert(start.ArgumentList.Count - 3, profile.EncoderLevel); }
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Cannot start encoder check");
         var stderr = process.StandardError.ReadToEndAsync();
         var stdout = process.StandardOutput.ReadToEndAsync();

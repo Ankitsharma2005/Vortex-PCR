@@ -8,15 +8,24 @@ public partial class ChannelView
 {
     public void SetCompact(bool compact)
     {
-        PreviewRow.Height = new GridLength(compact ? 220 : 300);
+        PreviewRow.Height = new GridLength(compact ? 220 : 350);
         if (TransportPanel.Parent is Panel parent) parent.Children.Remove(TransportPanel);
-        TransportButtons.Rows = compact ? 1 : 2;
-        TransportButtons.Columns = compact ? 6 : 3;
+        TransportButtons.Rows = 1;
+        TransportButtons.Columns = 6;
         TransportRow.Height = new GridLength(compact ? 64 : 0);
+        PreviewTransportRow.Height = new GridLength(compact ? 0 : 50);
         TimingColumn.Width = new GridLength(compact ? 170 : 205);
-        Grid.SetRow(TransportPanel, compact ? 6 : 0);
-        Grid.SetColumn(TransportPanel, compact ? 0 : 2);
-        TransportPanel.VerticalAlignment = compact ? VerticalAlignment.Stretch : VerticalAlignment.Bottom;
+        Grid.SetRow(TransportPanel, compact ? 6 : 1);
+        Grid.SetColumn(TransportPanel, 0);
+        TransportPanel.VerticalAlignment = VerticalAlignment.Stretch;
+        TransportPanel.HorizontalAlignment = compact ? HorizontalAlignment.Stretch : HorizontalAlignment.Center;
+        TransportPanel.Width = compact ? double.NaN : 540;
+        foreach (var button in TransportButtons.Children.OfType<Button>())
+        {
+            button.Height = compact ? 48 : 34;
+            button.FontSize = compact ? 25 : 21;
+            button.Padding = new Thickness(compact ? 4 : 2);
+        }
         (compact ? DeckLayout : PreviewLayout).Children.Add(TransportPanel);
     }
     private void ConfigureClipActions()

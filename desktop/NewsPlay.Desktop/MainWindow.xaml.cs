@@ -105,7 +105,10 @@ public partial class MainWindow : Window
                 await TestNdiWorkflow();
                 await TestCaptureWorkflow();
                 await TestAdvancedCg();
-                if (ChannelTwo.IsVisible || DeckRow.Height.Value != 462) throw new InvalidOperationException("Single port layout failed");
+                var videoBottom = ChannelOne.Preview.TranslatePoint(new Point(0, ChannelOne.Preview.ActualHeight), ChannelOne).Y;
+                var controlsTop = ChannelOne.PlayPauseButton.TranslatePoint(new Point(0, 0), ChannelOne).Y;
+                if (ChannelTwo.IsVisible || ChannelOne.TransportPanel.HorizontalAlignment != HorizontalAlignment.Center || controlsTop < videoBottom)
+                    throw new InvalidOperationException("Single port controls are not centered below the video");
                 await File.WriteAllTextAsync(smokeFile + ".result.txt", "PASS: Single/dual workspace, clip context actions, native previews, CG detach/restore, output settings and monitor composition.");
             }
             catch (Exception ex) { await File.WriteAllTextAsync(smokeFile + ".result.txt", "FAIL: " + ex); Environment.ExitCode = 1; }

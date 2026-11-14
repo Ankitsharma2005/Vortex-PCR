@@ -76,7 +76,7 @@ public partial class MainWindow
         dualPort = dual; SingleModeMenu.IsChecked = !dual; DualModeMenu.IsChecked = dual;
         SecondDeckColumn.Width = dual ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
         Grid.SetColumn(ChannelTwo, dual ? 1 : 0);
-        DeckRow.Height = new GridLength(dual ? 446 : 462);
+        DeckRow.Height = new GridLength(dual ? 446 : 526);
         ChannelOne.SetCompact(dual); ChannelTwo.SetCompact(dual);
 #if MCR_VARIANT
         PortOneRundown.Header = "MASTER PLAYLIST · SINGLE PROGRAM";

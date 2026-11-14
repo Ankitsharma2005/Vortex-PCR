@@ -9,9 +9,31 @@ namespace NewsPlay.Engine;
 public sealed class VlcDecoder : IDecoder
 {
     public const int MaxWidth = 960, MaxHeight = 540, Capacity = 64 + MaxWidth * MaxHeight * 4;
+    public const int ProductionMaxWidth = 3840, ProductionMaxHeight = 2160;
+    private ProductionVideoPipeline? production;
+    public ProjectVideoFormat? ProductionFormat => production?.Format;
+    public object ProductionStatus => new { format = production?.Format, sourceWidth = SourceWidth, sourceHeight = SourceHeight,
+        sourceNativeRaster = production is not null && SourceWidth >= production.Format.Width && SourceHeight >= production.Format.Height,
+        frames = production?.Produced ?? 0, missedDeadlines = production?.MissedDeadlines ?? 0, repeatedFrames = production?.RepeatedFrames ?? 0, processingMs = production?.ProcessingMs ?? 0 };
+    public void ConfigureProject(ProjectVideoFormat? format)
+    {
+        if (HasMedia) throw new InvalidOperationException("Stop and unload both programs before changing the production format");
+        var next = format is null ? null : new ProductionVideoPipeline(format, () => vlc.Clock);
+        var previous = production; production = next; previous?.Dispose();
+        managed = new byte[format?.FrameBytes ?? MaxWidth * MaxHeight * 4];
+    }
+    public bool CopyProductionFrame(byte[] target, out int w, out int h, out long clock, bool interlaced = false, bool lowerFieldFirst = false)
+    {
+        if (production is not null) return production.Copy(target, out w, out h, out clock, interlaced, lowerFieldFirst);
+        return CopyHardwareFrame(target, out w, out h, out clock);
+    }
     private readonly LibVLC vlc;
     private readonly MediaPlayer player;
     private readonly PcmAudioOutput audio = new();
+    private HardwareDecodeSettings hardwareDecoding = new();
+    private string activeDecodeBackend = "not loaded";
+    public void ConfigureHardwareDecoding(HardwareDecodeSettings settings) { settings.Validate(); Volatile.Write(ref hardwareDecoding, settings); }
+    public object HardwareDecodeStatus => new { requestedNextLoad = Volatile.Read(ref hardwareDecoding).Mode, activeRequestedBackend = activeDecodeBackend, softwareOverride = Environment.GetEnvironmentVariable("NEWSPLAY_SOFTWARE_DECODE") == "1", hasMedia = HasMedia, frames = Frames };
     private readonly MediaPlayer.LibVLCAudioPlayCb audioPlay;
     private readonly MediaPlayer.LibVLCAudioPauseCb audioPause;
     private readonly MediaPlayer.LibVLCAudioResumeCb audioResume;
@@ -45,7 +67,8 @@ public sealed class VlcDecoder : IDecoder
     private readonly MemoryMappedFile scratch;
     private readonly MemoryMappedViewAccessor scratchView;
     private readonly IntPtr buffer;
-    private readonly byte[] managed = new byte[MaxWidth * MaxHeight * 4];
+    private byte[] managed = new byte[MaxWidth * MaxHeight * 4];
+    private readonly byte[] previewPixels = new byte[MaxWidth * MaxHeight * 4];
     private ColourTransform colour = new(new ColourCorrection());
     private readonly RawPreview? rawPreview;
     public Guid LoadedMediaId { get; private set; }
@@ -72,12 +95,14 @@ public sealed class VlcDecoder : IDecoder
         if (channel is 1 or 2 or 5) rawPreview = new RawPreview(instance, channel + 20);
         // Page-aligned scratch memory satisfies VLC's 32-byte alignment requirement.
         // Pad scanlines for SIMD converters even when visible height is not a multiple of 32.
-        scratch = MemoryMappedFile.CreateNew(null, MaxWidth * 576 * 4);
+        scratch = MemoryMappedFile.CreateNew(null, channel is 1 or 2 ? ProductionMaxWidth * 2176L * 4 : MaxWidth * 576 * 4);
         scratchView = scratch.CreateViewAccessor();
         buffer = scratchView.SafeMemoryMappedViewHandle.DangerousGetHandle();
         map = MemoryMappedFile.CreateOrOpen($"Local\\NewsPlay.{instance}.CH{channel}", Capacity);
         view = map.CreateViewAccessor(); frameLock = new Mutex(false, $"Local\\NewsPlay.{instance}.CH{channel}.Lock");
-        player = new MediaPlayer(vlc); player.EnableHardwareDecoding = Environment.GetEnvironmentVariable("NEWSPLAY_SOFTWARE_DECODE") != "1"; // Request acceleration; memory callbacks may still require software decoding.
+        // Configure the media directly: MediaPlayer.EnableHardwareDecoding would
+        // append its own D3D11VA option at Play and override Auto/DXVA2/CPU choices.
+        player = new MediaPlayer(vlc);
         audioPlay = (_, samples, count, pts) => audio.Samples(samples, count, pts);
         audioPause = (_, _) => audio.Pause(); audioResume = (_, _) => audio.Resume(); audioFlush = (_, _) => audio.Flush();
         player.SetAudioCallbacks(audioPlay, audioPause, audioResume, audioFlush, null);
@@ -88,6 +113,12 @@ public sealed class VlcDecoder : IDecoder
         formatCb = (ref IntPtr opaque, IntPtr chroma, ref uint videoWidth, ref uint videoHeight, ref uint pitch, ref uint lines) =>
         {
             SourceWidth = (int)videoWidth; SourceHeight = (int)videoHeight;
+            if (production is not null)
+            {
+                var ratio = Math.Min((double)production.Format.Width / videoWidth, (double)production.Format.Height / videoHeight);
+                // Never call an upscaled source native; retain original source dimensions in status.
+                width = Math.Max(8, (int)(videoWidth * ratio) / 8 * 8); height = Math.Max(2, (int)(videoHeight * ratio) / 2 * 2);
+            }
             Marshal.Copy(System.Text.Encoding.ASCII.GetBytes("RV32"), 0, chroma, 4);
             videoWidth = (uint)width; videoHeight = (uint)height;
             pitch = (uint)(width * 4); lines = (uint)((height + 31) & ~31);
@@ -105,12 +136,22 @@ public sealed class VlcDecoder : IDecoder
         {
             var size = width * height * 4;
             Marshal.Copy(buffer, managed, 0, size);
-            rawPreview?.Publish(managed, width, height, LoadedMediaId);
+            var pw = width; var ph = height;
+            byte[] preview = managed;
+            if (production is not null)
+            {
+                var ratio = Math.Min((double)MaxWidth / width, (double)MaxHeight / height);
+                pw = Math.Max(2, (int)(width * ratio) / 2 * 2); ph = Math.Max(2, (int)(height * ratio) / 2 * 2);
+                if (rawPreview?.Enabled == true) VideoRaster.Scale(managed, width, height, previewPixels, pw, ph); preview = previewPixels;
+            }
+            rawPreview?.Publish(preview, pw, ph, LoadedMediaId);
             Volatile.Read(ref colour).Apply(managed, size, width, height);
+            production?.Submit(managed, width, height, presentationClock);
+            if (production is not null) VideoRaster.Scale(managed, width, height, previewPixels, pw, ph);
             try { held = frameLock.WaitOne(0); } catch (AbandonedMutexException) { held = true; }
             if (!held) return;
-            Marshal.Copy(managed, 0, IntPtr.Add(view.SafeMemoryMappedViewHandle.DangerousGetHandle(), checked((int)view.PointerOffset + 64)), size);
-            view.Write(8, width); view.Write(12, height); view.Write(16, width * 4); view.Write(48, presentationClock); view.Write(0, Interlocked.Increment(ref frames));
+            Marshal.Copy(preview, 0, IntPtr.Add(view.SafeMemoryMappedViewHandle.DangerousGetHandle(), checked((int)view.PointerOffset + 64)), pw * ph * 4);
+            view.Write(8, pw); view.Write(12, ph); view.Write(16, pw * 4); view.Write(48, presentationClock); view.Write(0, Interlocked.Increment(ref frames));
         }
         catch { /* Frame publication failure must not unwind into native VLC code. */ }
         finally { if (held) frameLock.ReleaseMutex(); }
@@ -120,8 +161,9 @@ public sealed class VlcDecoder : IDecoder
         if (Environment.GetEnvironmentVariable("NEWSPLAY_TRACE") == "1") Console.WriteLine("Decoder: loading " + asset.Name);
         player.Stop(); LoadedMediaId = asset.Id; SetColour(asset.Colour); audio.Flush(); audio.Start(); ended = false; error = null; HasMedia = true;
         var ratio = asset.Width > 0 && asset.Height > 0 ? (double)asset.Width / asset.Height : 16d / 9;
-        width = (int)Math.Min(MaxWidth, MaxHeight * ratio); width = Math.Max(8, width / 8 * 8);
-        height = Math.Max(2, Math.Min(MaxHeight, (int)(width / ratio)) / 2 * 2);
+        var maxW = production?.Format.Width ?? MaxWidth; var maxH = production?.Format.Height ?? MaxHeight;
+        width = (int)Math.Min(maxW, maxH * ratio); width = Math.Max(8, width / 8 * 8);
+        height = Math.Max(2, Math.Min(maxH, (int)(width / ratio)) / 2 * 2);
         var location = asset.Path;
         if (asset.Live?.Type is "Browser" or "NDI")
         {
@@ -130,6 +172,9 @@ public sealed class VlcDecoder : IDecoder
             location = "http://127.0.0.1:" + (Environment.GetEnvironmentVariable("NEWSPLAY_PORT") ?? "17890") + "/browser/stream/" + asset.Id + "?key=" + Uri.EscapeDataString(key);
         }
         using var media = new Media(vlc, location, asset.Kind == "Live" ? FromType.FromLocation : FromType.FromPath);
+        activeDecodeBackend = Volatile.Read(ref hardwareDecoding).VlcBackend(Environment.GetEnvironmentVariable("NEWSPLAY_SOFTWARE_DECODE") == "1");
+        media.AddOption(":avcodec-hw=" + activeDecodeBackend);
+        if (production is not null) { media.AddOption(":deinterlace=-1"); media.AddOption(":deinterlace-mode=yadif2x"); }
         if (asset.Live?.Type is "Browser" or "NDI") media.AddOption(":demux=mjpeg");
         if (asset.Live is { } live)
         {
@@ -151,7 +196,7 @@ public sealed class VlcDecoder : IDecoder
     }
     public void Play() { if (HasMedia) player.SetPause(false); }
     public void Pause() { if (HasMedia) player.SetPause(true); }
-    public void Stop() { player.Stop(); audio.Pause(); HasMedia = false; ended = false; error = null; }
+    public void Stop() { player.Stop(); audio.Pause(); production?.Clear(); HasMedia = false; ended = false; error = null; }
     public void Seek(double seconds) { if (HasMedia) { audio.Flush(); player.Time = (long)(seconds * 1000); } ended = false; }
     public void SetAudio(double gainDb, bool mute) => audio.Gain(gainDb, mute);
     public IReadOnlyList<AudioDeviceOption> AudioDevices() => PcmAudioOutput.Devices();
@@ -167,6 +212,7 @@ public sealed class VlcDecoder : IDecoder
         player.Stop();
         if (Environment.GetEnvironmentVariable("NEWSPLAY_TRACE") == "1") Console.WriteLine("Decoder: disposing player");
         player.Dispose();
+        production?.Dispose();
         audio.Dispose();
         if (Environment.GetEnvironmentVariable("NEWSPLAY_TRACE") == "1") Console.WriteLine("Decoder: disposing buffers");
         frameLock.Dispose(); view.Dispose(); map.Dispose(); scratchView.Dispose(); scratch.Dispose();

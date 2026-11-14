@@ -14,7 +14,8 @@ public sealed class PcmAudioOutput : IDisposable
     private TimestampedAudioBuffer? buffer;
     public Func<long> Clock { get; set; } = () => Environment.TickCount64 * 1000;
     private long videoDelay, measuredQueue;
-    public object SyncStatus => new { videoDelayMs = Interlocked.Read(ref videoDelay) / 1000d, renderQueueMs = Interlocked.Read(ref measuredQueue) / 1000d, trimmedFrames = buffer?.TrimmedFrames ?? 0, heldFrames = buffer?.HeldFrames ?? 0 };
+    public object SyncStatus => new { renderBufferMs = 80, videoDelayMs = Interlocked.Read(ref videoDelay) / 1000d, renderQueueMs = Interlocked.Read(ref measuredQueue) / 1000d, trimmedFrames = buffer?.TrimmedFrames ?? 0, heldFrames = buffer?.HeldFrames ?? 0, starvedFrames = buffer?.StarvedFrames ?? 0, callbackErrors = Interlocked.Read(ref callbackErrors) };
+    private long callbackErrors;
     public void SetVideoDelay(long delay) { Interlocked.Exchange(ref videoDelay, delay); buffer?.SetDelay(delay); }
     private string endpoint = "";
     private int rate = 48000, bits = 16;
@@ -51,6 +52,8 @@ public sealed class PcmAudioOutput : IDisposable
             using var enumerator = new MMDeviceEnumerator();
             device = endpoint.Length == 0 ? enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia) : enumerator.GetDevice(endpoint);
             buffer = new TimestampedAudioBuffer(new WaveFormat(rate, bits, 2), () => Clock(), RenderLatency); buffer.SetDelay(Interlocked.Read(ref videoDelay));
+            // Restore the stable shared-mode buffer. RenderLatency still measures
+            // queued samples, so stability does not depend on a fixed A/V offset.
             try { output = new WasapiOut(device, AudioClientShareMode.Shared, true, 80); output.Init(buffer); output.Play(); }
             catch { Release(); throw; }
         }
@@ -89,12 +92,21 @@ public sealed class PcmAudioOutput : IDisposable
             }
             lock (gate) { buffer?.Add(bytes, pts); }
         }
-        catch { }
+        catch { Interlocked.Increment(ref callbackErrors); }
     }
     public void Gain(double db, bool mute) { gain = mute ? 0 : (float)Math.Pow(10, db / 20); if (mute) { left = right = 0; Flush(); } }
-    public void Pause() { HardwareReset?.Invoke(); lock (gate) { output?.Pause(); buffer?.Clear(); left = right = 0; } }
+    public void Pause() { HardwareReset?.Invoke(); lock (gate) { output?.Stop(); buffer?.ResetRenderer(); Interlocked.Exchange(ref measuredQueue, 0); left = right = 0; } }
     public void Resume() { lock (gate) output?.Play(); }
-    public void Flush() { leveler.Reset(); HardwareReset?.Invoke(); lock (gate) { buffer?.Clear(); left = right = 0; } }
+    public void Flush()
+    {
+        leveler.Reset(); HardwareReset?.Invoke();
+        lock (gate)
+        {
+            var playing = output?.PlaybackState == PlaybackState.Playing;
+            output?.Stop(); buffer?.ResetRenderer(); Interlocked.Exchange(ref measuredQueue, 0); left = right = 0;
+            if (playing) output?.Play();
+        }
+    }
     private void Release() { output?.Dispose(); output = null; device?.Dispose(); device = null; buffer = null; left = right = 0; }
     public void Dispose() { lock (gate) Release(); }
 }

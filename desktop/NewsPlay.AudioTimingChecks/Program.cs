@@ -37,6 +37,10 @@ Check(target.SequenceEqual(packet), "Changed USB device queue uses measured late
 Check(Math.Abs(measured.SubmittedSeconds - .02) < .000001, "Submitted render duration counts hardware-format-independent source frames");
 measured.Clear();
 Check(Math.Abs(measured.SubmittedSeconds - .02) < .000001, "Flush preserves running hardware clock epoch");
+measured.ResetRenderer();
+Check(measured.SubmittedSeconds == 0, "Stopped renderer resets submitted clock epoch");
+latency = 0; clock = 2000000; measured.Add(packet, clock); measured.Read(target, 0, target.Length);
+Check(target.SequenceEqual(packet), "First post-seek packet has no stale device delay");
 short[] Tone(double amplitude) => Enumerable.Range(0, 96000).Select(i => (short)(32767 * amplitude * Math.Sin(2 * Math.PI * 1000 * (i / 2) / 48000))).ToArray();
 var meter = new NewsPlay.Core.LufsMeter();
 Check(double.IsNegativeInfinity(meter.Measure(new short[96000])), "LUFS digital silence");
@@ -67,3 +71,21 @@ Check(outputMeter.Levels(1900000) == (0d, 0d), "Meter does not show audio before
 Check(outputMeter.Levels(2000000) == (.5d, .25d), "Output meter preserves stereo peaks at playback time");
 Check(outputMeter.Levels(2200000) == (0d, 0d), "Stale output meter decays to zero");
 outputMeter.Clear(); Check(outputMeter.Levels(2000000) == (0d, 0d), "Meter flush clears pending peaks");
+long jitterClock = 10000000;
+var continuous = new TimestampedAudioBuffer(new WaveFormat(48000, 16, 2), () => jitterClock);
+var tonePacket = new byte[1920]; var toneOut = new byte[1920];
+for (int block = 0; block < 1000; block++)
+{
+    for (int frame = 0; frame < 480; frame++)
+    {
+        var sample = (short)(16000 * Math.Sin((block * 480L + frame) * 2 * Math.PI * 1003 / 48000));
+        for (int channel = 0; channel < 2; channel++) { var at = frame * 4 + channel * 2; tonePacket[at] = (byte)sample; tonePacket[at + 1] = (byte)(sample >> 8); }
+    }
+    var pts = 10000000 + block * 10000L;
+    jitterClock = pts + (block % 2 == 0 ? -2500 : 2500);
+    continuous.Add(tonePacket.ToArray(), pts); continuous.Read(toneOut, 0, toneOut.Length);
+    if (!toneOut.SequenceEqual(tonePacket)) throw new Exception("Device clock jitter spliced the continuous stereo waveform");
+}
+Check(continuous.TrimmedFrames == 0 && continuous.HeldFrames == 0 && continuous.StarvedFrames == 0, "10 seconds of continuous PCM survives ±2.5 ms clock jitter without sample cuts or inserted silence");
+continuous.Read(toneOut, 0, toneOut.Length);
+Check(continuous.StarvedFrames == 480 && toneOut.All(b => b == 0), "Source starvation is reported separately from intentional timestamp holds");

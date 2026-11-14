@@ -104,10 +104,25 @@ public sealed class EngineClient : IDisposable
     public async Task Attach() => await LoadKey();
     public async Task<int> ColourSource(EngineCommand command) { using var response = await http.PostAsJsonAsync("/colour-source", command, Json.Options); await Check(response); using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync()); return json.RootElement.GetProperty("slot").GetInt32(); }
     public async Task<StreamStatus[]> StreamStatus() => await http.GetFromJsonAsync<StreamStatus[]>("/stream/status", Json.Options) ?? [];
+    public async Task<JsonElement> ProjectVideoStatus() => await http.GetFromJsonAsync<JsonElement>("/project-video/status", Json.Options);
+    public async Task<JsonElement> AudioSyncStatus() => await http.GetFromJsonAsync<JsonElement>("/audio-sync", Json.Options);
+    public async Task<JsonElement> HardwareDecodingStatus() => await http.GetFromJsonAsync<JsonElement>("/hardware-decoding", Json.Options);
+    public async Task ConfigureHardwareDecoding(HardwareDecodeSettings settings) { using var response = await http.PostAsJsonAsync("/hardware-decoding", settings, Json.Options); await Check(response); }
+    public async Task<HardwareDecodeProbeResult> TestHardwareDecoding(HardwareDecodeProbeRequest request)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var message = new HttpRequestMessage(HttpMethod.Post, "/hardware-decoding/probe") { Content = JsonContent.Create(request, options: Json.Options) };
+        using var response = await http.SendAsync(message, timeout.Token); await Check(response);
+        return (await response.Content.ReadFromJsonAsync<HardwareDecodeProbeResult>(Json.Options, timeout.Token))!;
+    }
+    public async Task<JsonElement> CheckProjectVideo(string format) { using var response = await http.PostAsJsonAsync("/project-video/check", new EngineCommand { Text = format }, Json.Options); await Check(response); return await response.Content.ReadFromJsonAsync<JsonElement>(Json.Options); }
+    public async Task ApplyProjectVideo(string format) { using var response = await http.PostAsJsonAsync("/project-video/apply", new EngineCommand { Text = format }, Json.Options); await Check(response); }
+    public async Task<List<StreamProfile>> StreamProfiles() => await http.GetFromJsonAsync<List<StreamProfile>>("/stream/profiles", Json.Options) ?? [];
+    public async Task SaveStreamProfile(StreamProfile profile) { using var response = await http.PostAsJsonAsync("/stream/profile", profile, Json.Options); await Check(response); }
     public async Task StreamStart(StreamProfile profile) { using var response = await http.PostAsJsonAsync("/stream/start", profile, Json.Options); await Check(response); }
     public async Task StreamStop(Guid id) { using var response = await http.PostAsJsonAsync("/stream/stop", new StreamProfile { Id = id }, Json.Options); await Check(response); }
     public async Task<List<LivePreviewStatus>> LiveStatus() => await http.GetFromJsonAsync<List<LivePreviewStatus>>("/live/status", Json.Options) ?? [];
-    public async Task BrowserFrame(Guid id, byte[] jpeg) { using var body = new ByteArrayContent(jpeg); body.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/jpeg"); using var response = await http.PostAsync("/browser/frame/" + id, body); await Check(response); }
+    public async Task BrowserFrame(Guid id, byte[] jpeg, CancellationToken cancellationToken = default) { using var body = new ByteArrayContent(jpeg); body.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/jpeg"); using var response = await http.PostAsync("/browser/frame/" + id, body, cancellationToken); await Check(response); }
     public async Task LivePreview(EngineCommand command) { var response = await http.PostAsJsonAsync("/live/preview", command, Json.Options); await Check(response); }
     public async Task Shutdown() { var response = await http.PostAsync("/shutdown", null); await Check(response); }
     private static async Task Check(HttpResponseMessage response) { if (response.IsSuccessStatusCode) return; var raw = await response.Content.ReadAsStringAsync(); try { using var json = JsonDocument.Parse(raw); throw new InvalidOperationException(json.RootElement.GetProperty("error").GetString()); } catch (JsonException) { throw new InvalidOperationException(raw); } }
