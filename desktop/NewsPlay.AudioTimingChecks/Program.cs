@@ -2,7 +2,7 @@ using NAudio.Wave;
 using NewsPlay.Engine;
 
 long clock = 920000;
-var audio = new TimestampedAudioBuffer(new WaveFormat(48000, 16, 2), () => clock);
+var audio = new TimestampedAudioBuffer(new WaveFormat(48000, 16, 2), () => clock, () => 80000);
 byte[] packet = Enumerable.Repeat((byte)37, 1920).ToArray();
 byte[] target = new byte[1920];
 void Check(bool condition, string name) { if (!condition) throw new Exception(name); Console.WriteLine("PASS " + name); }
@@ -26,3 +26,14 @@ for (long frame = 0; frame < 720000; frame++)
     if (!target.SequenceEqual(packet)) throw new Exception("Simulated two-hour clock timeline failed");
 }
 Console.WriteLine("PASS two-hour simulated timestamp timeline (not a hardware soak test)");
+long latency = 20000;
+clock = 980000;
+var measured = new TimestampedAudioBuffer(new WaveFormat(48000, 16, 2), () => clock, () => latency);
+measured.Add(packet, 1000000); measured.Read(target, 0, target.Length);
+Check(target.SequenceEqual(packet), "Measured 20ms device queue");
+latency = 140000; clock = 960000;
+measured.Add(packet, 1100000); measured.Read(target, 0, target.Length);
+Check(target.SequenceEqual(packet), "Changed USB device queue uses measured latency");
+Check(Math.Abs(measured.SubmittedSeconds - .02) < .000001, "Submitted render duration counts hardware-format-independent source frames");
+measured.Clear();
+Check(Math.Abs(measured.SubmittedSeconds - .02) < .000001, "Flush preserves running hardware clock epoch");

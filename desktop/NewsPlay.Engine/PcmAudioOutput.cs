@@ -48,10 +48,17 @@ public sealed class PcmAudioOutput : IDisposable
             if (output is not null) { output.Play(); return; }
             using var enumerator = new MMDeviceEnumerator();
             device = endpoint.Length == 0 ? enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia) : enumerator.GetDevice(endpoint);
-            buffer = new TimestampedAudioBuffer(new WaveFormat(rate, bits, 2), () => Clock()); buffer.SetDelay(Interlocked.Read(ref videoDelay));
+            buffer = new TimestampedAudioBuffer(new WaveFormat(rate, bits, 2), () => Clock(), RenderLatency); buffer.SetDelay(Interlocked.Read(ref videoDelay));
             try { output = new WasapiOut(device, AudioClientShareMode.Shared, true, 80); output.Init(buffer); output.Play(); }
             catch { Release(); throw; }
         }
+    }
+    private long RenderLatency()
+    {
+        var renderer = output; var source = buffer;
+        if (renderer is null || source is null) return 0;
+        var playedSeconds = renderer.GetPosition() / (double)renderer.OutputWaveFormat.AverageBytesPerSecond;
+        return (long)(Math.Clamp(source.SubmittedSeconds - playedSeconds, 0, 2) * 1000000);
     }
     public void Samples(IntPtr pointer, uint frames, long pts = 0)
     {

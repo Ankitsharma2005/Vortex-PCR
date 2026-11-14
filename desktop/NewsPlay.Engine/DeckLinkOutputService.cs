@@ -184,7 +184,7 @@ public sealed class DeckLinkOutputService : IDisposable
                         timeline.Anchor(sourceClock, displayTime, timescale); anchoredClock = sourceClock;
                         // Update only for a fresh image. A held/paused frame must not grow the audio delay.
                         var hardwareTime = started ? output.ScheduledTime(timescale) : 0;
-                        decoder.SetSoundCardVideoDelay((long)((displayTime - hardwareTime) * 1000000d / timescale) + decoder.ClockMicroseconds - sourceClock + Route.AudioDelayMs * 1000L);
+                        decoder.SetSoundCardVideoDelay((long)((timeline.AudioTime(decoder.ClockMicroseconds, Route.AudioDelayMs) - hardwareTime * (48000d / timescale)) * 1000000d / 48000));
                     }
                     Interlocked.Increment(ref frames);
                 }

@@ -4,12 +4,13 @@ namespace NewsPlay.Engine;
 
 // Reconcile each WASAPI read with the decoder clock rather than accumulating
 // an indefinitely growing FIFO when the two devices run at different rates.
-public sealed class TimestampedAudioBuffer(WaveFormat format, Func<long> clock) : IWaveProvider
+public sealed class TimestampedAudioBuffer(WaveFormat format, Func<long> clock, Func<long>? renderLatency = null) : IWaveProvider
 {
     private readonly object gate = new();
     private readonly Queue<(byte[] Data, long Pts)> packets = new();
     private int offset, queuedBytes;
-    private long delayUs;
+    private long delayUs, submittedBytes;
+    public double SubmittedSeconds => Interlocked.Read(ref submittedBytes) / (double)format.AverageBytesPerSecond;
     public WaveFormat WaveFormat => format;
     public void SetDelay(long microseconds) => Interlocked.Exchange(ref delayUs, Math.Clamp(microseconds, 0, 1000000));
     public void Clear() { lock (gate) { packets.Clear(); offset = queuedBytes = 0; } }
@@ -27,9 +28,8 @@ public sealed class TimestampedAudioBuffer(WaveFormat format, Func<long> clock) 
     {
         Array.Clear(buffer, destination, count);
         var frames = count / format.BlockAlign;
-        // WASAPI shared renderer is configured with an 80 ms buffer. This is
-        // a latency estimate, not a measurement of the physical DAC delay.
-        var now = clock() + 80000 - Interlocked.Read(ref delayUs);
+        // Use the render device position to measure queued audio, not a fixed latency guess.
+        var now = clock() + (renderLatency?.Invoke() ?? 0) - Interlocked.Read(ref delayUs);
         lock (gate)
         {
             var written = 0;
@@ -49,6 +49,7 @@ public sealed class TimestampedAudioBuffer(WaveFormat format, Func<long> clock) 
                 if (offset == packet.Data.Length) { packets.Dequeue(); queuedBytes -= packet.Data.Length; offset = 0; }
             }
         }
+        Interlocked.Add(ref submittedBytes, count);
         return count;
     }
 }
