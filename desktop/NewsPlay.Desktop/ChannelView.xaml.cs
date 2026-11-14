@@ -42,7 +42,7 @@ public partial class ChannelView : UserControl
         PreviewMouseDown += (_, _) => Host?.SelectChannel(ChannelId);
     }
     public FrameworkElement DetachRundown() { OuterLayout.Children.Remove(RundownPanel); return RundownPanel; }
-    public void SetSelected(bool selected) => OuterBorder.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(selected ? "#7198E3" : "#303C50"));
+    public void SetSelected(bool selected) => OuterBorder.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(selected ? "#56C8E8" : "#303B49"));
     public void Update(EngineState state)
     {
         if (!CgSurface.Enabled && advancedCg is not null) { Monitor.Children.Remove(advancedCg); advancedCg.Dispose(); advancedCg = null; }
@@ -99,7 +99,7 @@ public partial class ChannelView : UserControl
             if (item?.Kind == "Live") PositionSlider.IsEnabled = false;
             EndMode.SelectedIndex = channel.EndMode switch { "Hold" => 1, "Black" => 2, _ => 0 }; LoopList.IsChecked = channel.LoopPlayback; LoopClip.IsChecked = channel.LoopCurrent;
             DecoderLabel.Text = $"{channel.DecodedFrames:N0} frames";
-            PortMeter.Levels(channel.AudioLeft, channel.AudioRight);
+            if (Environment.TickCount64 - PortMeter.LastFastUpdate > 200) PortMeter.Levels(channel.AudioLeft, channel.AudioRight);
             var asset = state.Media.FirstOrDefault(m => m.Id == item?.MediaId);
             PortMeter.EndpointMix(channel.Status == "Playing" && !channel.Emergency && asset?.Live?.Type == "Browser");
             if (asset?.Live?.Type == "NDI") { var levels = Host.NdiLevels(asset.Id, ChannelId); PortMeter.Levels(levels.Left, levels.Right, "NDI PCM"); }

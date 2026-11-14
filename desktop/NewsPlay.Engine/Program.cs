@@ -110,6 +110,8 @@ try
         catch (Exception ex) { context.Response.StatusCode = 400; await context.Response.WriteAsJsonAsync(new { error = ex.Message }); }
     });
     app.MapGet("/state", () => { lock (gate) return Results.Json(Json.Copy(controller.State), Json.Options); });
+    app.MapGet("/audio-sync", () => new[] { d1.AudioSyncStatus, d2.AudioSyncStatus });
+    app.MapGet("/audio-levels", () => new[] { new[] { d1.AudioLeft, d1.AudioRight }, new[] { d2.AudioLeft, d2.AudioRight } });
     using var deckLink = new DeckLinkOutputService(d1, d2);
     using var streaming = new StreamingService(d1, d2);
     app.MapGet("/stream/status", () => Results.Json(streaming.Status(), Json.Options));

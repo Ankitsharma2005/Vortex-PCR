@@ -7,13 +7,16 @@ namespace NewsPlay.Engine;
 public sealed class TimestampedAudioBuffer(WaveFormat format, Func<long> clock, Func<long>? renderLatency = null) : IWaveProvider
 {
     private readonly object gate = new();
+    public RenderedAudioMeter Meter { get; } = new();
     private readonly Queue<(byte[] Data, long Pts)> packets = new();
     private int offset, queuedBytes;
-    private long delayUs, submittedBytes;
+    private long delayUs, submittedBytes, trimmedFrames, heldFrames;
+    public long TrimmedFrames => Interlocked.Read(ref trimmedFrames);
+    public long HeldFrames => Interlocked.Read(ref heldFrames);
     public double SubmittedSeconds => Interlocked.Read(ref submittedBytes) / (double)format.AverageBytesPerSecond;
     public WaveFormat WaveFormat => format;
-    public void SetDelay(long microseconds) => Interlocked.Exchange(ref delayUs, Math.Clamp(microseconds, 0, 1000000));
-    public void Clear() { lock (gate) { packets.Clear(); offset = queuedBytes = 0; } }
+    public void SetDelay(long microseconds) => Interlocked.Exchange(ref delayUs, Math.Clamp(microseconds, -500000, 1000000));
+    public void Clear() { lock (gate) { packets.Clear(); Meter.Clear(); offset = queuedBytes = 0; } }
     public void Add(byte[] data, long pts)
     {
         if (data.Length % format.BlockAlign != 0) return;
@@ -29,7 +32,8 @@ public sealed class TimestampedAudioBuffer(WaveFormat format, Func<long> clock, 
         Array.Clear(buffer, destination, count);
         var frames = count / format.BlockAlign;
         // Use the render device position to measure queued audio, not a fixed latency guess.
-        var now = clock() + (renderLatency?.Invoke() ?? 0) - Interlocked.Read(ref delayUs);
+        var audibleAt = clock() + (renderLatency?.Invoke() ?? 0);
+        var now = audibleAt - Interlocked.Read(ref delayUs);
         lock (gate)
         {
             var written = 0;
@@ -40,15 +44,16 @@ public sealed class TimestampedAudioBuffer(WaveFormat format, Func<long> clock, 
                 var difference = (due - wanted) * format.SampleRate / 1000000L;
                 // One millisecond deadband avoids correcting clock-query jitter.
                 if (difference > format.SampleRate / 1000)
-                { written += (int)Math.Min(frames - written, difference); continue; }
+                { var hold = (int)Math.Min(frames - written, difference); Interlocked.Add(ref heldFrames, hold); written += hold; continue; }
                 if (difference < -format.SampleRate / 1000)
-                    offset += (int)Math.Min((packet.Data.Length - offset) / format.BlockAlign, -difference) * format.BlockAlign;
+                    { var skip = (int)Math.Min((packet.Data.Length - offset) / format.BlockAlign, -difference); Interlocked.Add(ref trimmedFrames, skip); offset += skip * format.BlockAlign; }
                 var copy = Math.Min((frames - written) * format.BlockAlign, packet.Data.Length - offset);
                 Buffer.BlockCopy(packet.Data, offset, buffer, destination + written * format.BlockAlign, copy);
                 written += copy / format.BlockAlign; offset += copy;
                 if (offset == packet.Data.Length) { packets.Dequeue(); queuedBytes -= packet.Data.Length; offset = 0; }
             }
         }
+        Meter.Submit(buffer, destination, count, format.SampleRate, format.BitsPerSample, audibleAt);
         Interlocked.Add(ref submittedBytes, count);
         return count;
     }

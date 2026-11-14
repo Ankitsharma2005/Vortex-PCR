@@ -37,3 +37,33 @@ Check(target.SequenceEqual(packet), "Changed USB device queue uses measured late
 Check(Math.Abs(measured.SubmittedSeconds - .02) < .000001, "Submitted render duration counts hardware-format-independent source frames");
 measured.Clear();
 Check(Math.Abs(measured.SubmittedSeconds - .02) < .000001, "Flush preserves running hardware clock epoch");
+short[] Tone(double amplitude) => Enumerable.Range(0, 96000).Select(i => (short)(32767 * amplitude * Math.Sin(2 * Math.PI * 1000 * (i / 2) / 48000))).ToArray();
+var meter = new NewsPlay.Core.LufsMeter();
+Check(double.IsNegativeInfinity(meter.Measure(new short[96000])), "LUFS digital silence");
+var reading = meter.Measure(Tone(.1));
+Check(Math.Abs(reading + 20) < .2, "Stereo 1 kHz calibration near -20 LUFS");
+var normalizer = new NewsPlay.Core.AudioLeveler();
+normalizer.Configure(new() { Enabled = true, Mode = "LUFS", TargetLufs = -23, MaxBoostDb = 24 });
+float[] leveled = [];
+for (var i = 0; i < 20; i++) leveled = normalizer.Process(Tone(.02), 48000, 1);
+var measuredOutput = new NewsPlay.Core.LufsMeter().Measure(leveled.Select(x => (short)(x * 32767)).ToArray());
+Check(Math.Abs(measuredOutput + 23) < .3, "LUFS leveling converges to -23 on steady tone");
+var rejected = false; try { normalizer.ValidateRate(44100); } catch (InvalidOperationException) { rejected = true; }
+Check(rejected, "LUFS rejects unsupported sample rate");
+clock = 1000000;
+var advance = new TimestampedAudioBuffer(new WaveFormat(48000, 16, 2), () => clock);
+advance.SetDelay(-100000); advance.Add(packet, 1100000); advance.Read(target, 0, target.Length);
+Check(target.SequenceEqual(packet), "Negative calibration trim advances audio");
+var delayed = new TimestampedAudioBuffer(new WaveFormat(48000, 16, 2), () => clock);
+delayed.SetDelay(100000); delayed.Add(packet, 1000000); delayed.Read(target, 0, target.Length);
+Check(target.All(x => x == 0) && delayed.HeldFrames == 480, "Early audio is held for positive video delay");
+clock += 100000; delayed.Read(target, 0, target.Length);
+Check(target.SequenceEqual(packet), "Held audio releases at delayed video time");
+var outputMeter = new RenderedAudioMeter();
+byte[] peakPcm = new byte[1920];
+for (var i = 0; i < peakPcm.Length; i += 4) { peakPcm[i + 1] = 64; peakPcm[i + 3] = 32; }
+outputMeter.Submit(peakPcm, 0, peakPcm.Length, 48000, 16, 2000000);
+Check(outputMeter.Levels(1900000) == (0d, 0d), "Meter does not show audio before queued playback time");
+Check(outputMeter.Levels(2000000) == (.5d, .25d), "Output meter preserves stereo peaks at playback time");
+Check(outputMeter.Levels(2200000) == (0d, 0d), "Stale output meter decays to zero");
+outputMeter.Clear(); Check(outputMeter.Levels(2000000) == (0d, 0d), "Meter flush clears pending peaks");

@@ -13,20 +13,21 @@ public sealed class PcmAudioOutput : IDisposable
     private WasapiOut? output;
     private TimestampedAudioBuffer? buffer;
     public Func<long> Clock { get; set; } = () => Environment.TickCount64 * 1000;
-    private long videoDelay;
+    private long videoDelay, measuredQueue;
+    public object SyncStatus => new { videoDelayMs = Interlocked.Read(ref videoDelay) / 1000d, renderQueueMs = Interlocked.Read(ref measuredQueue) / 1000d, trimmedFrames = buffer?.TrimmedFrames ?? 0, heldFrames = buffer?.HeldFrames ?? 0 };
     public void SetVideoDelay(long delay) { Interlocked.Exchange(ref videoDelay, delay); buffer?.SetDelay(delay); }
     private string endpoint = "";
     private int rate = 48000, bits = 16;
     private volatile float gain = 1;
     private readonly AudioLeveler leveler = new();
-    public void SetAutoLevel(AudioLevelSettings settings) => leveler.Configure(settings);
+    public void SetAutoLevel(AudioLevelSettings settings) { if (settings.Enabled && settings.Mode == "LUFS" && rate != 48000) throw new InvalidOperationException("Set PCM to 48000 Hz before enabling LUFS mode."); leveler.Configure(settings); }
     private volatile float left, right;
     private long lastSamples;
     public event Action<byte[]>? HardwareSamples;
     public event Action<TimestampedPcm>? TimestampedSamples;
     public event Action? HardwareReset;
-    public double Left => Environment.TickCount64 - Interlocked.Read(ref lastSamples) < 250 ? left : 0;
-    public double Right => Environment.TickCount64 - Interlocked.Read(ref lastSamples) < 250 ? right : 0;
+    public double Left => buffer?.Meter.Levels(Clock()).Left ?? 0;
+    public double Right => buffer?.Meter.Levels(Clock()).Right ?? 0;
     public static IReadOnlyList<AudioDeviceOption> Devices()
     {
         using var enumerator = new MMDeviceEnumerator(); var result = new List<AudioDeviceOption>();
@@ -35,6 +36,7 @@ public sealed class PcmAudioOutput : IDisposable
     }
     public void Configure(string id, int sampleRate, int bitDepth)
     {
+        leveler.ValidateRate(sampleRate);
         if (sampleRate is not (32000 or 44100 or 48000 or 88200 or 96000 or 176400 or 192000) || bitDepth is not (16 or 24 or 32)) throw new InvalidOperationException("Choose a supported PCM sample rate and bit depth");
         using var enumerator = new MMDeviceEnumerator();
         using var candidate = id.Length == 0 ? enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia) : enumerator.GetDevice(id);
@@ -58,7 +60,7 @@ public sealed class PcmAudioOutput : IDisposable
         var renderer = output; var source = buffer;
         if (renderer is null || source is null) return 0;
         var playedSeconds = renderer.GetPosition() / (double)renderer.OutputWaveFormat.AverageBytesPerSecond;
-        return (long)(Math.Clamp(source.SubmittedSeconds - playedSeconds, 0, 2) * 1000000);
+        var latency = (long)(Math.Clamp(source.SubmittedSeconds - playedSeconds, 0, 2) * 1000000); Interlocked.Exchange(ref measuredQueue, latency); return latency;
     }
     public void Samples(IntPtr pointer, uint frames, long pts = 0)
     {

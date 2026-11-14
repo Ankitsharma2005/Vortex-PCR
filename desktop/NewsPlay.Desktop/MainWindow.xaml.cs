@@ -49,7 +49,7 @@ public partial class MainWindow : Window
             FormatTwo.SelectedItem = state.Channels[1].Format;
 #endif
             WatchPath.Text = state.WatchFolder; });
-        stateTimer.Start(); frameTimer.Start();
+        stateTimer.Start(); frameTimer.Start(); StartAudioMeters();
         if (smokeFile is null && Environment.GetCommandLineArgs().Contains("--live-inputs")) OpenLiveInputs(this, new RoutedEventArgs());
         if (smokeFile is not null)
         {
@@ -373,7 +373,7 @@ public partial class MainWindow : Window
     {
         if (closing) return;
         if (smokeFile is null && state?.Channels.Any(c => c.Status == "Playing" || c.Emergency) == true && MessageBox.Show(this, "Close the operator console? File/network engine playback continues. Browser and NDI inputs stop and use signal-loss fallback. Fullscreen windows will close.", "Close console", MessageBoxButton.YesNo, MessageBoxImage.Information) != MessageBoxResult.Yes) { e.Cancel = true; return; }
-        e.Cancel = true; closing = true; stateTimer.Stop(); frameTimer.Stop();
+        e.Cancel = true; closing = true; stateTimer.Stop(); frameTimer.Stop(); audioMeterTimer.Stop();
         await SourcePreview.CloseAsync();
         liveInputsWindow?.Close(); browserSources?.Dispose();
         foreach (var window in toolWindows.Values.ToArray()) window.Close(); foreach (var output in outputs.ToArray()) output.Close(); foreach (var frame in frames) frame.Dispose(); client.Dispose();

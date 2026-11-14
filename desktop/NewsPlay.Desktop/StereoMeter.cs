@@ -7,18 +7,22 @@ namespace NewsPlay.Desktop;
 
 public sealed class StereoMeter : FrameworkElement
 {
-    private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(33) };
+    private readonly DispatcherTimer timer = new(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
     private double targetL, targetR, shownL, shownR, peakL, peakR;
     private DateTime holdL, holdR;
     private string caption = "PCM";
     private bool endpointMix;
+    public long LastFastUpdate { get; private set; }
+    public void FastLevels(double left, double right, string label = "PCM") { LastFastUpdate = Environment.TickCount64; Levels(left, right, label); }
+    private readonly System.Diagnostics.Stopwatch animationClock = System.Diagnostics.Stopwatch.StartNew();
+    private long lastTick;
     private MMDeviceEnumerator? devices;
     private MMDevice? device;
     public StereoMeter()
     {
         MinWidth = 58;
         Loaded += (_, _) => timer.Start(); Unloaded += (_, _) => { timer.Stop(); device?.Dispose(); device = null; devices?.Dispose(); devices = null; };
-        timer.Tick += (_, _) => { if (endpointMix) ReadEndpoint(); shownL += (targetL - shownL) * (targetL > shownL ? .8 : .12); shownR += (targetR - shownR) * (targetR > shownR ? .8 : .12); InvalidateVisual(); };
+        timer.Tick += (_, _) => { if (endpointMix) ReadEndpoint(); var now = animationClock.ElapsedMilliseconds; var dt = Math.Clamp((now - lastTick) / 1000d, 0, .1); lastTick = now; shownL += (targetL - shownL) * (1 - Math.Exp(-dt / (targetL > shownL ? .012 : .18))); shownR += (targetR - shownR) * (1 - Math.Exp(-dt / (targetR > shownR ? .012 : .18))); InvalidateVisual(); };
         ToolTip = "Stereo audio · −60 to 0 dBFS · peak hold · red indicates near clipping";
     }
     public void EndpointMix(bool enabled) { endpointMix = enabled; ToolTip = enabled ? "Windows default output MIX, including other apps. Browser/NDI direct audio is not isolated by program port." : "This port's decoded PCM audio, after gain/mute · −60 to 0 dBFS"; }

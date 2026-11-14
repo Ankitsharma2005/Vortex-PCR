@@ -1,4 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
-  <ItemGroup><PackageReference Include="NAudio.Core" Version="2.2.1"/><Compile Include="../NewsPlay.Engine/TimestampedAudioBuffer.cs" Link="TimestampedAudioBuffer.cs"/></ItemGroup>
+  <ItemGroup><PackageReference Include="NAudio.Core" Version="2.2.1"/><Compile Include="../NewsPlay.Engine/TimestampedAudioBuffer.cs" Link="TimestampedAudioBuffer.cs"/><Compile Include="../NewsPlay.Core/LufsMeter.cs" Link="LufsMeter.cs"/><Compile Include="../NewsPlay.Core/AudioLevelSettings.cs" Link="AudioLevelSettings.cs"/><Compile Include="../NewsPlay.Engine/RenderedAudioMeter.cs" Link="RenderedAudioMeter.cs"/></ItemGroup>
 </Project>

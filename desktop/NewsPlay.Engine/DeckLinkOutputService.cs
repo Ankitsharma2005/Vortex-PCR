@@ -161,8 +161,10 @@ public sealed class DeckLinkOutputService : IDisposable
                 {
                     if (decoder.AudioSampleRate != 48000) throw new InvalidOperationException("Set this program audio profile to 48000 Hz before enabling embedded SDI audio");
                     output.EnableAudioOutput(_BMDAudioSampleRate.bmdAudioSampleRate48kHz, _BMDAudioSampleType.bmdAudioSampleType16bitInteger, 2, _BMDAudioOutputStreamType.bmdAudioOutputStreamTimestamped);
-                    audioEnabled = true; decoder.TimestampedAudio += Samples; decoder.HardwareAudioReset += Reset;
+                    audioEnabled = true; decoder.TimestampedAudio += Samples;
                 }
+                // Sound-card-only output must also reset its video clock on seek/load/pause.
+                decoder.HardwareAudioReset += Reset;
                 var source = new byte[VlcDecoder.MaxWidth * VlcDecoder.MaxHeight * 4]; var scaled = new byte[rgbStride * height];
                 long sequence = 0, sourceClock = 0, anchoredClock = 0; int poolIndex = 0, sw = 0, sh = 0; var timeline = new DeckLinkTimeline();
                 long scaledClock = -1; int scaledWidth = -1, scaledHeight = -1;
@@ -195,10 +197,11 @@ public sealed class DeckLinkOutputService : IDisposable
                 TimestampedPcm? pending = null; int offset = 0; long pendingTime = 0, submittedUntil = 0;
                 while (!Cancel.IsCancellationRequested)
                 {
-                    if (Interlocked.Exchange(ref resetAudio, 0) != 0 && audioEnabled)
+                    if (Interlocked.Exchange(ref resetAudio, 0) != 0)
                     {
-                        output.FlushBufferedAudioSamples(); pending = null; offset = 0; submittedUntil = 0;
-                        timeline.Reset(); anchoredClock = sourceClock; decoder.SetSoundCardVideoDelay(0);
+                        if (audioEnabled) output.FlushBufferedAudioSamples(); pending = null; offset = 0; submittedUntil = 0;
+                        // Keep the last known output delay while awaiting a fresh post-seek image.
+                        timeline.Reset(); anchoredClock = sourceClock;
                     }
                     output.GetBufferedVideoFrameCount(out var count);
                     if(count == 0) { sequence = DeckLinkTimeline.NextVideo(sequence, output.ScheduledTime(timescale), duration); Interlocked.Increment(ref underruns); }

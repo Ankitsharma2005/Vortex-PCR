@@ -18,6 +18,7 @@ public sealed class VlcDecoder : IDecoder
     private readonly MediaPlayer.LibVLCAudioFlushCb audioFlush;
     private int audioRate = 48000, audioBits = 16;
     private string audioDevice = "";
+    public object AudioSyncStatus => audio.SyncStatus;
     public double AudioLeft => audio.Left;
     public double AudioRight => audio.Right;
     public int AudioSampleRate => audioRate;

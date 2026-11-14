@@ -100,6 +100,7 @@ public sealed class EngineClient : IDisposable
     public async Task SourcePreview(EngineCommand command) { var response = await http.PostAsJsonAsync("/source-preview", command, Json.Options); await Check(response); }
     public async Task<SourcePreviewState> SourceStatus() => (await http.GetFromJsonAsync<SourcePreviewState>("/source-preview", Json.Options))!;
     public async Task<double> PreviewPosition() { using var json = JsonDocument.Parse(await http.GetStringAsync("/preview")); return json.RootElement.GetProperty("position").GetDouble(); }
+    public async Task<double[][]> AudioLevels() => await http.GetFromJsonAsync<double[][]>("/audio-levels") ?? [];
     public async Task Attach() => await LoadKey();
     public async Task<int> ColourSource(EngineCommand command) { using var response = await http.PostAsJsonAsync("/colour-source", command, Json.Options); await Check(response); using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync()); return json.RootElement.GetProperty("slot").GetInt32(); }
     public async Task<StreamStatus[]> StreamStatus() => await http.GetFromJsonAsync<StreamStatus[]>("/stream/status", Json.Options) ?? [];

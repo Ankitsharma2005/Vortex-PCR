@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -22,7 +22,7 @@ public sealed partial class OutputSettingsWindow
         var status = new TextBlock { Text = "Click Discover devices to check the card and driver.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(6) };
         Label(panel, "DeckLink device / subdevice"); panel.Children.Add(device);
         Label(panel, "Connector"); panel.Children.Add(connection); Label(panel, "Hardware video format (SD/HD)"); panel.Children.Add(mode); panel.Children.Add(embedded);
-        Label(panel,"Audio sync trim (ms, −500 to +500; positive delays audio)");panel.Children.Add(audioDelay);
+        Label(panel,"Audio sync trim (ms, −500 to +500; applies to SDI and routed sound-card audio. Positive = audio later)");panel.Children.Add(audioDelay);
         panel.Children.Add(legal);
         device.SelectionChanged += (_, _) => { if (device.SelectedItem is DeckLinkDeviceInfo selected) { connection.ItemsSource = selected.Connections; connection.SelectedIndex = 0; mode.ItemsSource = selected.Modes; mode.SelectedItem = selected.Modes.FirstOrDefault(m => m.Name.Contains("1080i50", StringComparison.OrdinalIgnoreCase)) ?? selected.Modes.FirstOrDefault(); status.Text = selected.Name + "\nDetected API: " + selected.Api + "\n" + selected.Issue + (selected.Modes.Count == 0 ? "\nNo usable modes reported. Save diagnostics below." : "\nChoose a hardware format, then Start output."); } };
         DeckLinkScan? lastScan = null;
